@@ -119,5 +119,5 @@ WebSocket frames. Server → app: `{"type":"envelope","envelope":{…}}`, `{"typ
 
 ## Storage
 
-- App: `data/<name>.db` (repo root) holds tables `messages`, `identity` (your keys) and `contacts` (pinned keys).
+- App: `data/<name>.db` holds tables `messages`, `identity` (your keys) and `contacts` (pinned keys).
 - Server (PostgreSQL): `identities` (public keys) and `envelopes` (ciphertext as `jsonb`, deleted on ack or after TTL).
