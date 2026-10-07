@@ -1,0 +1,25 @@
+{
+  "name": "telegraph",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22.5"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "prepare": "tsc -b packages/shared",
+    "server": "tsc -b packages/shared && npm run dev -w @telegraph/server",
+    "app": "tsc -b packages/shared && npm run dev -w @telegraph/local-server --"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/ws": "^8.18.2",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}

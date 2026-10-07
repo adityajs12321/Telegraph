@@ -1,0 +1,22 @@
+{
+  "name": "@telegraph/server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/server.ts",
+    "build": "tsc -b",
+    "start": "node dist/server.js",
+    "db:generate": "drizzle-kit generate"
+  },
+  "dependencies": {
+    "@telegraph/shared": "*",
+    "drizzle-orm": "^0.45.3",
+    "pg": "^8.23.1",
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.1",
+    "drizzle-kit": "^0.31.11"
+  }
+}

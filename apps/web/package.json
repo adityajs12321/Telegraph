@@ -1,0 +1,6 @@
+{
+  "name": "@telegraph/web",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Static browser UI, served by @telegraph/local-server"
+}

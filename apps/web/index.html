@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Telegraph</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, sans-serif; background: #f4f4f5; color: #18181b; }
+    main { max-width: 640px; margin: 0 auto; height: 100vh; display: flex; flex-direction: column; padding: 16px; gap: 12px; }
+    header { display: flex; justify-content: space-between; align-items: center; }
+    h1 { font-size: 1.2rem; margin: 0; }
+    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #dc2626; margin-right: 6px; }
+    .dot.on { background: #16a34a; }
+    #peers { font-size: 0.85rem; color: #52525b; }
+    #log { flex: 1; overflow-y: auto; background: #fff; border: 1px solid #e4e4e7; border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .msg { max-width: 75%; padding: 8px 10px; border-radius: 8px; background: #e4e4e7; align-self: flex-start; white-space: pre-wrap; word-break: break-word; }
+    .msg.mine { background: #2563eb; color: #fff; align-self: flex-end; }
+    .meta { font-size: 0.72rem; opacity: 0.75; margin-bottom: 2px; }
+    .notice { align-self: center; font-size: 0.8rem; color: #b91c1c; }
+    form { display: flex; gap: 8px; }
+    input, button { font: inherit; padding: 8px 10px; border: 1px solid #d4d4d8; border-radius: 6px; }
+    #to { width: 120px; }
+    #body { flex: 1; }
+    button { background: #2563eb; color: #fff; border: none; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1><span id="dot" class="dot"></span>Telegraph — <span id="me">…</span></h1>
+      <span id="peers">online: none</span>
+    </header>
+    <div id="log"></div>
+    <form id="form">
+      <input id="to" placeholder="to" list="peer-list" required />
+      <datalist id="peer-list"></datalist>
+      <input id="body" placeholder="message" autocomplete="off" required />
+      <button>Send</button>
+    </form>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const log = $("log");
+    const nodes = new Map(); // message id -> element
+    let me = "";
+    const STATUS_LABELS = {
+      pending: "sending…",
+      sent: "sent",
+      delivered: "delivered",
+      failed: "failed",
+    };
+
+    function render(msg) {
+      let el = nodes.get(msg.id);
+      if (!el) {
+        el = document.createElement("div");
+        el.className = "msg" + (msg.from === me ? " mine" : "");
+        el.innerHTML = '<div class="meta"></div><div class="text"></div>';
+        el.querySelector(".text").textContent = msg.body;
+        nodes.set(msg.id, el);
+        log.appendChild(el);
+        log.scrollTop = log.scrollHeight;
+      }
+      el.dataset.msg = JSON.stringify(msg);
+      const time = new Date(msg.timestamp).toLocaleTimeString();
+      const who = msg.from === me ? `to ${msg.to}` : `from ${msg.from}`;
+      const status = msg.from === me ? ` · ${STATUS_LABELS[msg.status] ?? msg.status}` : "";
+      el.querySelector(".meta").textContent = `${who} · ${time}${status}`;
+    }
+
+    function notice(text) {
+      const el = document.createElement("div");
+      el.className = "notice";
+      el.textContent = text;
+      log.appendChild(el);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    function setPeers(peers) {
+      $("peers").textContent = "online: " + (peers.length ? peers.join(", ") : "none");
+      $("peer-list").replaceChildren(...peers.map((p) => Object.assign(document.createElement("option"), { value: p })));
+    }
+
+    function connect() {
+      const ws = new WebSocket(`ws://${location.host}/ws`);
+
+      ws.onmessage = (e) => {
+        const f = JSON.parse(e.data);
+        switch (f.type) {
+          case "init":
+            me = f.me;
+            $("me").textContent = me;
+            document.title = `Telegraph — ${me}`;
+            $("dot").classList.toggle("on", f.connected);
+            log.innerHTML = "";
+            nodes.clear();
+            f.history.forEach(render);
+            setPeers(f.peers);
+            break;
+          case "message":
+            render(f);
+            break;
+          case "status": {
+            const el = nodes.get(f.id);
+            if (el) render({ ...JSON.parse(el.dataset.msg), status: f.status });
+            if (f.reason) notice(f.reason);
+            break;
+          }
+          case "peers":
+            setPeers(f.peers);
+            break;
+          case "connection":
+            $("dot").classList.toggle("on", f.connected);
+            if (!f.connected) notice("server disconnected — reconnecting…");
+            break;
+          case "notice":
+            notice(f.reason);
+            break;
+        }
+      };
+
+      ws.onclose = () => {
+        $("dot").classList.remove("on");
+        setTimeout(connect, 1000);
+      };
+
+      $("form").onsubmit = (e) => {
+        e.preventDefault();
+        if (ws.readyState !== WebSocket.OPEN) return notice("local app not reachable");
+        ws.send(JSON.stringify({ type: "send", to: $("to").value, body: $("body").value }));
+        $("body").value = "";
+        $("body").focus();
+      };
+    }
+
+    connect();
+  </script>
+</body>
+</html>

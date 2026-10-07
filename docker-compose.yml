@@ -1,0 +1,29 @@
+services:
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: telegraph
+      POSTGRES_PASSWORD: telegraph
+      POSTGRES_DB: telegraph
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U telegraph"]
+      interval: 2s
+      retries: 15
+
+  server:
+    build:
+      context: .
+      dockerfile: apps/server/Dockerfile
+    environment:
+      DATABASE_URL: postgres://telegraph:telegraph@db:5432/telegraph
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
