@@ -6,3 +6,4 @@ data/
 og.md
 graphify-out
 apps/server/drizzle
+.env
