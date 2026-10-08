@@ -10,20 +10,29 @@ Node.js 22.5+ (apps use the built-in `node:sqlite` module). The server needs Pos
 
 ```
 apps/
-  web/              browser UI
+  web/              browser UI (React + Vite)
+    src/
+      useTelegraph.ts     WebSocket connection to the local app
+      Login.tsx           
+      Sidebar.tsx         contacts list
+      Chat.tsx            conversation with the selected contact
   local-server/     local backend
     src/
       main.ts             entry point
       config.ts           CLI flags / env vars
+      session.ts          logged in/out: login, logout, starts and stops the messenger
       messenger.ts        encrypt + send, receive + decrypt + ack, message statuses
       server-api.ts       signed HTTP client for the server
       server-socket.ts    signed WebSocket to the server (reconnects)
       ui-server.ts        HTTP + WebSocket for the browser
-      local-store.ts      SQLite: messages, identity, contacts
+      local-store.ts      SQLite: messages, logged-in account, pinned keys, address book
+      local-migrations.ts schema changes for the local db
   server/           hosted server: keys, encrypted delivery, docker setup
     src/
       server.ts           
       auth.ts             request signature checks
+      login-codes.ts      one-time email codes
+      mailer.ts           sends the codes (Resend, or the server log in development)
       hub.ts              live WebSocket connections
       schema.ts           Drizzle table schemas
       store.ts            PostgreSQL queries (Drizzle ORM): identities, envelopes
@@ -32,22 +41,45 @@ packages/
   shared/           @telegraph/shared: wire protocol types + crypto + helper tools
 ```
 
-`npm run build` compiles everything with TypeScript project references (`tsc -b`), shared first.
+`npm run build` compiles everything with TypeScript project references (`tsc -b`), shared first, then builds the web UI with Vite.
 
 ## Run locally
 
 ```bash
 npm install
 docker compose up --build # relay server + Postgres
-npm run app -- --name alice --port 3001         # http://localhost:3001
-npm run app -- --name bob   --port 3002         # http://localhost:3002
+npm run app -- --profile alice --port 3001      # http://localhost:3001
+npm run app -- --profile bob   --port 3002      # http://localhost:3002
 ```
 
-App options (also readable from env vars `NAME`, `PORT`, `SERVER`, `DATA_DIR`):
+`npm run app` rebuilds the web UI before starting. To work on the UI with hot reload, run an app and then
+`APP_PORT=3001 npm run dev -w @telegraph/web` (Vite forwards `/ws` to that app).
+
+## Accounts
+
+Open the app and log in with your email: the server emails a 6-digit code, and the first time an
+email logs in you pick a username.
+
+- Each login makes new keys on that device and replaces the account's keys on the server, so an
+  account is logged in on **one device at a time**. Logging in somewhere else signs the other device
+  out immediately.
+- Contacts notice the new key automatically, and their apps refetch it. Messages that were waiting for the old device are dropped.
+- Each user gets their own database, `data/<username>.db`. Logging out only forgets
+  that device's keys, so switching users on one app just switches files, and logging back in shows your messages again.
+- Codes expire after 10 minutes, allow 5 tries, and can be re-requested every 30 seconds.
+
+## Contacts
+
+Type a name into the box above the contact list and press **Add**. The app asks the server whether
+that user exists and only adds them if it does. If the server
+can't be reached, nothing is added and you're asked to try again.
+Anyone you message, or who messages you, is added to the list automatically.
+
+App options (also readable from env vars `PROFILE`, `PORT`, `SERVER`, `DATA_DIR`):
 
 | flag | default | |
 |---|---|---|
-| `--name` | required | your username |
+| `--profile` | `default` | names this app instance, which remembers who's logged in (`<data-dir>/profiles/<profile>.json`); use a different one per app running on the same machine |
 | `--port` | `3000` | local UI port |
 | `--server` | `http://localhost:8080` | server URL |
 | `--data-dir` | `<repo>/data` | where the local db is stored |
@@ -67,9 +99,9 @@ Messages are de-duplicated by `id`, so retries and re-deliveries are always safe
 
 ## Authentication
 
-1. **Registering a name.** On startup the app sends `PUT /keys/<name>` with its public keys
-   (Ed25519 for signing, X25519 for encryption). The server stores the first keys it sees for a
-   name; a different key trying to claim the same name later gets `409`.
+1. **Logging in.** `POST /auth/code {email}` emails a code. `POST /auth/login {email, code, signPub, boxPub}`
+   (plus `username` for a new account) checks it and stores the device's new public keys (Ed25519 for
+   signing, X25519 for encryption) as that account's keys. The email proves who you are, and then the private keys on the device do.
 2. **Signing every request.** Each request (and the WebSocket connection) carries three headers:
 
    | header | value |
@@ -111,13 +143,22 @@ Message (what the app encrypts, and stores locally):
 Envelope (the message above, encrypted and signed; all the server sees):
 
 ```json
-{ "id": "…", "from": "alice", "to": "bob", "epk": "<base64>", "iv": "<base64>", "ciphertext": "<base64>", "tag": "<base64>" }
+{ "id": "…", "from": "alice", "to": "bob", "toKey": "<bob's boxPub>", "epk": "<base64>", "iv": "<base64>", "ciphertext": "<base64>", "tag": "<base64>" }
 ```
 
+If the recipient has logged in on a new device since, the server answers `409`
+and senders's app fetches recipient's new key and encrypts it again.
+
 WebSocket frames. Server → app: `{"type":"envelope","envelope":{…}}`, `{"type":"delivered","id":"…"}`,
-`{"type":"peers","peers":["alice","bob"]}`. App → server: `{"type":"ack","ids":["…"]}`.
+`{"type":"peers","peers":["alice","bob"]}`. App → server: `{"type":"ack","ids":["…"]}`. The server closes
+the socket with code `4001` when the account logs in on another device.
 
 ## Storage
 
-- App: `data/<name>.db` holds tables `messages`, `identity` (your keys) and `contacts` (pinned keys).
-- Server (PostgreSQL): `identities` (public keys) and `envelopes` (ciphertext as `jsonb`, deleted on ack or after TTL).
+- App: `data/<username>.db` (one per user) holds tables `messages`, `identity` (username, email and this device's
+  keys; empty when logged out), `contacts` (pinned keys) and `address_book` (the names in your contact list).
+  `data/profiles/<profile>.json` (`{"name":"alice"}`) says which user each app instance is logged in as.
+  To change the local schema, append a step to `MIGRATIONS` in `local-migrations.ts`; each db runs the
+  steps it hasn't seen yet the next time it's opened.
+- Server (PostgreSQL): `identities` (username, email, current public keys), `envelopes` (ciphertext as `jsonb`,
+  deleted on ack or after TTL) and `login_codes` (hashed, deleted once used or expired).

@@ -1,7 +1,3 @@
-# fly.io build commands:
-#   fly launch --no-deploy --copy-config --config apps/server/fly.toml
-#   fly secrets set DATABASE_URL=postgres://... --config apps/server/fly.toml
-#   fly deploy . --config apps/server/fly.toml --dockerfile apps/server/Dockerfile
 app = "telegraph-server"
 primary_region = "bom"
 swap_size_mb = 512
@@ -20,7 +16,7 @@ swap_size_mb = 512
   [[http_service.checks]]
     method = "GET"
     path = "/health"
-    interval = "30s"
+    interval = "50s"
     timeout = "5s"
     grace_period = "10s"
 

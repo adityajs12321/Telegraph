@@ -1,12 +1,12 @@
 // Server persistence (PostgreSQL via Drizzle)
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { and, asc, count, eq, inArray, lt } from "drizzle-orm";
+import { and, asc, count, eq, gt, inArray, lt, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import pg from "pg";
 import type { Envelope, PublicKeys } from "@telegraph/shared";
-import { envelopes, identities } from "./schema.js";
+import { envelopes, identities, loginCodes } from "./schema.js";
 
 const MIGRATIONS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../drizzle");
 
@@ -36,15 +36,69 @@ export class Store {
     return row ?? null;
   }
 
-  // Returns false if the name was already taken (two devices racing for it).
-  async register(name: string, keys: PublicKeys): Promise<boolean> {
+  // ---- Accounts ----
+
+  async nameForEmail(email: string): Promise<string | null> {
+    const [row] = await this.db.select({ name: identities.name }).from(identities).where(eq(identities.email, email));
+    return row?.name ?? null;
+  }
+
+  // Returns false if the name (or email) is already taken.
+  async createAccount(email: string, name: string, keys: PublicKeys): Promise<boolean> {
     const inserted = await this.db
       .insert(identities)
-      .values({ name, ...keys })
+      .values({ name, email, ...keys })
       .onConflictDoNothing()
       .returning({ name: identities.name });
     return inserted.length > 0;
   }
+
+  // A new device logged in. Envelopes still waiting were encrypted for the old device's key and
+  // can't be opened by the new one, so they're dropped too.
+  async replaceKeys(name: string, keys: PublicKeys) {
+    await this.db.transaction(async (tx) => {
+      await tx.update(identities).set(keys).where(eq(identities.name, name));
+      await tx.delete(envelopes).where(eq(envelopes.recipient, name));
+    });
+  }
+
+  // ---- Login codes ----
+
+  async loginCodeSentAt(email: string): Promise<Date | null> {
+    const [row] = await this.db
+      .select({ createdAt: loginCodes.createdAt })
+      .from(loginCodes)
+      .where(eq(loginCodes.email, email));
+    return row?.createdAt ?? null;
+  }
+
+  // Replaces any earlier code for this email.
+  async saveLoginCode(email: string, codeHash: string, expiresAt: Date) {
+    const fields = { codeHash, expiresAt, attempts: 0, createdAt: new Date() };
+    await this.db
+      .insert(loginCodes)
+      .values({ email, ...fields })
+      .onConflictDoUpdate({ target: loginCodes.email, set: fields });
+  }
+
+  // Uses up one attempt and returns the code's hash, or null if there's no live code with attempts left.
+  // A single UPDATE, so parallel guesses can't get more than `maxAttempts` between them.
+  async takeLoginAttempt(email: string, maxAttempts: number): Promise<string | null> {
+    const [row] = await this.db
+      .update(loginCodes)
+      .set({ attempts: sql`${loginCodes.attempts} + 1` })
+      .where(
+        and(eq(loginCodes.email, email), gt(loginCodes.expiresAt, new Date()), lt(loginCodes.attempts, maxAttempts))
+      )
+      .returning({ codeHash: loginCodes.codeHash });
+    return row?.codeHash ?? null;
+  }
+
+  async deleteLoginCode(email: string) {
+    await this.db.delete(loginCodes).where(eq(loginCodes.email, email));
+  }
+
+  // ---- Envelopes ----
 
   async countFor(recipient: string): Promise<number> {
     const [row] = await this.db.select({ n: count() }).from(envelopes).where(eq(envelopes.recipient, recipient));
@@ -78,6 +132,7 @@ export class Store {
   }
 
   async purgeOlderThan(cutoff: Date): Promise<number> {
+    await this.db.delete(loginCodes).where(lt(loginCodes.expiresAt, new Date()));
     const purged = await this.db
       .delete(envelopes)
       .where(lt(envelopes.createdAt, cutoff))

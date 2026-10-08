@@ -1,9 +1,16 @@
-// SQLite Database
+// SQLite database for one user: <dataDir>/<username>.db
 
 import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 import path from "node:path";
 import type { ChatMessage, Identity, MessageStatus, PublicKeys, StoredMessage } from "@telegraph/shared";
+import { migrate } from "./local-migrations.js";
+
+// Logged in account
+export interface Account extends Identity {
+  name: string;
+  email: string;
+}
 
 interface MessageRow {
   id: string;
@@ -20,32 +27,11 @@ export class LocalStore {
   constructor(file: string) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     this.db = new DatabaseSync(file);
-    this.db.exec(`
-      PRAGMA journal_mode = DELETE;
-      CREATE TABLE IF NOT EXISTS messages (
-        id        TEXT PRIMARY KEY,
-        sender    TEXT NOT NULL,
-        recipient TEXT NOT NULL,
-        body      TEXT NOT NULL,
-        timestamp TEXT NOT NULL,
-        status    TEXT NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(timestamp);
-      CREATE INDEX IF NOT EXISTS idx_messages_status ON messages(status);
-      CREATE TABLE IF NOT EXISTS identity (
-        id        INTEGER PRIMARY KEY CHECK (id = 1),
-        sign_pub  TEXT NOT NULL,
-        sign_priv TEXT NOT NULL,
-        box_pub   TEXT NOT NULL,
-        box_priv  TEXT NOT NULL
-      );
-      -- Public keys of people we've talked to, pinned on first use.
-      CREATE TABLE IF NOT EXISTS contacts (
-        name     TEXT PRIMARY KEY,
-        sign_pub TEXT NOT NULL,
-        box_pub  TEXT NOT NULL
-      );
-    `);
+    // Wait while another app on this machine has the file locked.
+    this.db.exec(`PRAGMA busy_timeout = 5000`);
+    // Keep everything in <name>.db itself (no -wal file), so the file alone is a complete copy.
+    this.db.exec(`PRAGMA journal_mode = DELETE`);
+    migrate(this.db);
   }
 
   // ---- Messages ----
@@ -86,21 +72,40 @@ export class LocalStore {
     return rows.map(toMessage);
   }
 
-  // ---- Device identity ----
+  // ---- Logged in account ----
 
-  identity(): Identity | null {
+  account(): Account | null {
     const row = this.db.prepare(`SELECT * FROM identity WHERE id = 1`).get() as
-      | { sign_pub: string; sign_priv: string; box_pub: string; box_priv: string }
+      | { name: string; email: string; sign_pub: string; sign_priv: string; box_pub: string; box_priv: string }
       | undefined;
     return row
-      ? { signPub: row.sign_pub, signPriv: row.sign_priv, boxPub: row.box_pub, boxPriv: row.box_priv }
+      ? {
+          name: row.name,
+          email: row.email,
+          signPub: row.sign_pub,
+          signPriv: row.sign_priv,
+          boxPub: row.box_pub,
+          boxPriv: row.box_priv,
+        }
       : null;
   }
 
-  saveIdentity(id: Identity) {
+  saveAccount(a: Account) {
     this.db
-      .prepare(`INSERT INTO identity (id, sign_pub, sign_priv, box_pub, box_priv) VALUES (1, ?, ?, ?, ?)`)
-      .run(id.signPub, id.signPriv, id.boxPub, id.boxPriv);
+      .prepare(
+        `INSERT OR REPLACE INTO identity (id, name, email, sign_pub, sign_priv, box_pub, box_priv)
+         VALUES (1, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(a.name, a.email, a.signPub, a.signPriv, a.boxPub, a.boxPriv);
+  }
+
+  // Logout: forgets these keys
+  clearAccount(signPub: string) {
+    this.db.prepare(`DELETE FROM identity WHERE sign_pub = ?`).run(signPub);
+  }
+
+  close() {
+    this.db.close();
   }
 
   // ---- Contacts ----
@@ -116,6 +121,41 @@ export class LocalStore {
     this.db
       .prepare(`INSERT OR IGNORE INTO contacts (name, sign_pub, box_pub) VALUES (?, ?, ?)`)
       .run(name, keys.signPub, keys.boxPub);
+  }
+
+  // They logged in on a new device.
+  replaceContactKeys(name: string, keys: PublicKeys) {
+    this.db
+      .prepare(`INSERT OR REPLACE INTO contacts (name, sign_pub, box_pub) VALUES (?, ?, ?)`)
+      .run(name, keys.signPub, keys.boxPub);
+  }
+
+  // ---- Address book ----
+
+  contactList(): string[] {
+    const rows = this.db.prepare(`SELECT name FROM address_book ORDER BY name COLLATE NOCASE`).all() as {
+      name: string;
+    }[];
+    return rows.map((r) => r.name);
+  }
+
+  // Returns false if they were already in the list.
+  addContact(name: string): boolean {
+    const result = this.db
+      .prepare(`INSERT OR IGNORE INTO address_book (name, added_at) VALUES (?, ?)`)
+      .run(name, new Date().toISOString());
+    return result.changes > 0;
+  }
+
+  // Lists everyone `me` has already exchanged messages with (for databases from before the address book).
+  addContactsFromMessages(me: string) {
+    this.db
+      .prepare(
+        `INSERT OR IGNORE INTO address_book (name, added_at)
+         SELECT CASE WHEN sender = ? THEN recipient ELSE sender END AS name, MIN(timestamp)
+         FROM messages GROUP BY name`
+      )
+      .run(me);
   }
 }
 

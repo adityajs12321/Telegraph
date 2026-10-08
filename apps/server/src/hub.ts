@@ -2,7 +2,7 @@
 
 import { EventEmitter } from "node:events";
 import { WebSocket } from "ws";
-import { parseJson, type ClientFrame, type ServerFrame } from "@telegraph/shared";
+import { parseJson, SIGNED_OUT_CLOSE_CODE, type ClientFrame, type ServerFrame } from "@telegraph/shared";
 
 const PING_MS = 30_000;
 
@@ -23,7 +23,6 @@ export class Hub extends EventEmitter<HubEvents> {
 
   // client must already be authenticated.
   attach(name: string, ws: WebSocket) {
-    // A reconnect from the same device replaces its old connection.
     this.sockets.get(name)?.close(4000, "replaced by a newer connection");
     this.sockets.set(name, ws);
     this.alive.add(ws);
@@ -45,6 +44,11 @@ export class Hub extends EventEmitter<HubEvents> {
 
     this.emit("connect", name);
     this.broadcastPeers();
+  }
+
+  // Their keys were replaced by a login on another device.
+  disconnect(name: string, reason: string) {
+    this.sockets.get(name)?.close(SIGNED_OUT_CLOSE_CODE, reason);
   }
 
   // Returns false if client isn't connected.

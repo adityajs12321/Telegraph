@@ -54,6 +54,7 @@ export interface Envelope {
   id: string;
   from: string;
   to: string;
+  toKey: string; // the recipient's boxPub it was encrypted for; the server rejects it if that key was replaced
   epk: string;
   iv: string;
   ciphertext: string;
@@ -67,6 +68,26 @@ export type ServerFrame =
 
 export type ClientFrame = { type: "ack"; ids: string[] };
 
+// POST /auth/login. `name` is only needed the first time an email logs in.
+export interface LoginRequest extends PublicKeys {
+  email: string;
+  code: string;
+  name?: string;
+}
+
+export type LoginResponse = { name: string } | { needsName: true };
+
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+export function normalizeEmail(email: unknown): string | null {
+  if (typeof email !== "string") return null;
+  const e = email.trim().toLowerCase();
+  return e.length <= 254 && EMAIL_PATTERN.test(e) ? e : null;
+}
+
+// Used by websocket when this device's keys were replaced by a newer login
+export const SIGNED_OUT_CLOSE_CODE = 4001;
+
 export const AUTH_HEADERS = {
   name: "x-telegraph-name",
   timestamp: "x-telegraph-timestamp",
@@ -75,14 +96,28 @@ export const AUTH_HEADERS = {
 
 // ---- Websocket comms ----
 
-export type UiCommand = { type: "send"; to: string; body: string };
+export type UiCommand =
+  | { type: "send"; to: string; body: string }
+  | { type: "add-contact"; name: string }
+  | { type: "login-start"; email: string }
+  | { type: "login-verify"; email: string; code: string; name?: string }
+  | { type: "logout" };
+
+// code-sent  -> ask for the code
+// needs-name -> new account: ask for a username, then send login-verify again with it
+// error      -> show error reason
+export type LoginStep = "code-sent" | "needs-name" | "error";
 
 export type UiEvent =
-  | { type: "init"; me: string; connected: boolean; peers: string[]; history: StoredMessage[] }
+  | { type: "logged-out" }
+  | { type: "login"; step: LoginStep; reason?: string }
+  | { type: "init"; me: string; connected: boolean; peers: string[]; contacts: string[]; history: StoredMessage[] }
   | StoredMessage
   | { type: "status"; id: string; status: MessageStatus; reason?: string }
   | { type: "peers"; peers: string[] }
   | { type: "connection"; connected: boolean }
+  | { type: "contacts"; contacts: string[] }
+  | { type: "contact-error"; name: string; reason: string }
   | { type: "notice"; reason: string };
 
 // ---- Helpers ----

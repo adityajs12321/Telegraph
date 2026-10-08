@@ -18,6 +18,8 @@ services:
       dockerfile: apps/server/Dockerfile
     environment:
       DATABASE_URL: postgres://telegraph:telegraph@db:5432/telegraph
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      EMAIL_FROM: ${EMAIL_FROM:-}
     ports:
       - "8080:8080"
     depends_on:

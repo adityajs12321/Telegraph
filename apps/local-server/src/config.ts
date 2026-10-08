@@ -2,13 +2,12 @@
 
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { isValidName } from "@telegraph/shared";
 
 // data dir for database
 const DEFAULT_DATA_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../data");
 
 export interface AppConfig {
-  name: string;
+  profile: string; // names this app instance
   port: number;
   serverUrl: string;
   dataDir: string;
@@ -20,13 +19,13 @@ export function loadConfig(argv = process.argv, env = process.env): AppConfig {
     return i >= 0 ? argv[i + 1] : env[flag.toUpperCase().replace(/-/g, "_")] ?? fallback;
   };
 
-  const name = get("name");
-  if (!isValidName(name)) {
-    throw new Error("--name is required (letters, digits, _ or -, max 32 chars)");
+  const profile = get("profile", "default")!;
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(profile)) {
+    throw new Error("--profile must be letters, digits, _ or - (max 64 chars)");
   }
 
   return {
-    name,
+    profile,
     port: Number(get("port", "3000")),
     serverUrl: get("server", "http://localhost:8080")!.replace(/\/+$/, ""),
     dataDir: path.resolve(get("data-dir", DEFAULT_DATA_DIR)!),

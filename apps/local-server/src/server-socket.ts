@@ -2,7 +2,7 @@
 
 import { EventEmitter } from "node:events";
 import { WebSocket } from "ws";
-import { parseJson, type ClientFrame, type Envelope, type ServerFrame } from "@telegraph/shared";
+import { parseJson, SIGNED_OUT_CLOSE_CODE, type ClientFrame, type Envelope, type ServerFrame } from "@telegraph/shared";
 import type { ServerApi } from "./server-api.js";
 
 const WS_PATH = "/ws";
@@ -13,15 +13,19 @@ interface SocketEvents {
   envelope: [env: Envelope];
   delivered: [id: string];
   peers: [peers: string[]];
+  signedOut: []; // the server closed us because the account logged in on another device
+  rejected: []; // 401 on connect: our keys may have been replaced while we were offline
 }
 
 export class ServerSocket extends EventEmitter<SocketEvents> {
   private ws: WebSocket | null = null;
   private url: string;
+  private closed = false;
+  private retry: ReturnType<typeof setTimeout> | undefined;
 
   constructor(serverUrl: string, private api: ServerApi, private name: string, private reconnectMs = 2000) {
     super();
-    this.url = serverUrl.replace(/^http/, "ws") + WS_PATH; // http -> ws, https -> wss
+    this.url = serverUrl.replace(/^http/, "ws") + WS_PATH;
   }
 
   get connected() {
@@ -29,19 +33,32 @@ export class ServerSocket extends EventEmitter<SocketEvents> {
   }
 
   connect() {
+    if (this.closed) return;
     const ws = new WebSocket(this.url, { headers: this.api.signedHeaders("GET", WS_PATH) });
     this.ws = ws;
 
     ws.on("open", () => this.emit("open"));
     ws.on("message", (raw) => this.dispatch(parseJson(raw) as ServerFrame | null));
-    ws.on("close", () => {
-      if (this.ws !== ws) return;
+    ws.on("unexpected-response", (_req, res) => {
+      if (res.statusCode === 401) this.emit("rejected");
+      ws.terminate();
+    });
+    ws.on("close", (code) => {
+      if (this.ws !== ws || this.closed) return;
       this.emit("close");
-      setTimeout(() => this.connect(), this.reconnectMs);
+      if (code === SIGNED_OUT_CLOSE_CODE) return void this.emit("signedOut");
+      this.retry = setTimeout(() => this.connect(), this.reconnectMs);
     });
     ws.on("error", () => {
       // reconnection
     });
+  }
+
+  // disconnect
+  close() {
+    this.closed = true;
+    clearTimeout(this.retry);
+    this.ws?.close();
   }
 
   ack(ids: string[]) {

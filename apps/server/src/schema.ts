@@ -1,10 +1,11 @@
-// Database tables. After changing this file, run `npm run db:generate -w @telegraph/server`
-// to create a migration; migrations are applied on server startup.
-import { index, jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
+// Database tables.
+
+import { index, integer, jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 import type { Envelope } from "@telegraph/shared";
 
 export const identities = pgTable("identities", {
   name: text("name").primaryKey(),
+  email: text("email").notNull().unique(),
   signPub: text("sign_pub").notNull(),
   boxPub: text("box_pub").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -21,3 +22,12 @@ export const envelopes = pgTable(
   },
   (t) => [index("idx_envelopes_recipient").on(t.recipient, t.createdAt)]
 );
+
+// login codes dispatched to the user
+export const loginCodes = pgTable("login_codes", {
+  email: text("email").primaryKey(),
+  codeHash: text("code_hash").notNull(),
+  attempts: integer("attempts").notNull().default(0),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});

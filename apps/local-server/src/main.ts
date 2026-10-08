@@ -1,18 +1,15 @@
 // Main app entry point
-// Usage: npm run app -- --name alice --port 3001
+// Usage: npm run app -- --profile alice --port 3001
 
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { generateIdentity } from "@telegraph/shared";
 import { loadConfig, type AppConfig } from "./config.js";
-import { LocalStore } from "./local-store.js";
-import { Messenger } from "./messenger.js";
-import { ServerApi } from "./server-api.js";
-import { ServerSocket } from "./server-socket.js";
+import { Session } from "./session.js";
 import { UiServer } from "./ui-server.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const WEB_INDEX = path.resolve(HERE, "../../web/index.html");
+const WEB_DIR = path.resolve(HERE, "../../web/dist");
 
 let config: AppConfig;
 try {
@@ -22,21 +19,13 @@ try {
   process.exit(1);
 }
 
-const dbFile = path.join(config.dataDir, `${config.name}.db`);
-const store = new LocalStore(dbFile);
-
-// one time identity creation
-let identity = store.identity();
-if (!identity) {
-  identity = generateIdentity();
-  store.saveIdentity(identity);
+if (!fs.existsSync(path.join(WEB_DIR, "index.html"))) {
+  console.error(`web UI not built (missing ${WEB_DIR}); run: npm run build -w @telegraph/web`);
+  process.exit(1);
 }
+const ui = new UiServer(WEB_DIR);
 
-const api = new ServerApi(config.serverUrl, config.name, identity);
-const socket = new ServerSocket(config.serverUrl, api, config.name);
-const ui = new UiServer(WEB_INDEX);
-
-new Messenger(config.name, identity, store, api, socket, ui).start();
+new Session(config.serverUrl, config.dataDir, config.profile, ui).start();
 
 await ui.listen(config.port);
-console.log(`[${config.name}] UI at http://localhost:${config.port}  (server: ${config.serverUrl}, db: ${dbFile})`);
+console.log(`[${config.profile}] UI at http://localhost:${config.port}  (server: ${config.serverUrl}, data: ${config.dataDir})`);

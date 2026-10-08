@@ -81,7 +81,14 @@ export function seal(msg: ChatMessage, sender: Identity, recipientBoxPub: string
   cipher.setAAD(aad(head));
   const ciphertext = Buffer.concat([cipher.update(payload, "utf8"), cipher.final()]);
 
-  return { ...head, epk, iv: b64(iv), ciphertext: b64(ciphertext), tag: b64(cipher.getAuthTag()) };
+  return {
+    ...head,
+    toKey: recipientBoxPub,
+    epk,
+    iv: b64(iv),
+    ciphertext: b64(ciphertext),
+    tag: b64(cipher.getAuthTag()),
+  };
 }
 
 // Decrypts an envelope and checks the sender's signature
