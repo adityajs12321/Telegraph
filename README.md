@@ -123,7 +123,7 @@ Messages are de-duplicated by `id`, so retries and re-deliveries are always safe
 - Messages are encrypted with ephemeral X25519 + HKDF-SHA256 + AES-256-GCM and signed by the
   sender. The server only sees `id`, `from`, `to` and ciphertext.
 - The server sees who talks to whom and when, and who is online (the `peers` list is shared with
-  every connected app).
+  every connected app). Typing indicators aren't encrypted, so it also sees when you're typing to someone.
 
 ## Message format (JSON)
 
@@ -150,15 +150,12 @@ If the recipient has logged in on a new device since, the server answers `409`
 and senders's app fetches recipient's new key and encrypts it again.
 
 WebSocket frames. Server → app: `{"type":"envelope","envelope":{…}}`, `{"type":"delivered","id":"…"}`,
-`{"type":"peers","peers":["alice","bob"]}`. App → server: `{"type":"ack","ids":["…"]}`. The server closes
-the socket with code `4001` when the account logs in on another device.
+`{"type":"peers","peers":["alice","bob"]}`, `{"type":"typing","from":"alice","typing":true}`.
 
 ## Storage
 
 - App: `data/<username>.db` (one per user) holds tables `messages`, `identity` (username, email and this device's
   keys; empty when logged out), `contacts` (pinned keys) and `address_book` (the names in your contact list).
   `data/profiles/<profile>.json` (`{"name":"alice"}`) says which user each app instance is logged in as.
-  To change the local schema, append a step to `MIGRATIONS` in `local-migrations.ts`; each db runs the
-  steps it hasn't seen yet the next time it's opened.
-- Server (PostgreSQL): `identities` (username, email, current public keys), `envelopes` (ciphertext as `jsonb`,
-  deleted on ack or after TTL) and `login_codes` (hashed, deleted once used or expired).
+  To change the local schema, append a step to `MIGRATIONS` in `local-migrations.ts`.
+- Server (PostgreSQL): `identities` (username, email, current public keys), `envelopes` and `login_codes`.

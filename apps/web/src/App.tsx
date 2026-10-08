@@ -6,7 +6,7 @@ import { useTelegraph, type State } from "./useTelegraph";
 
 export function App() {
   const [open, setOpen] = useState<string | null>(null);
-  const { state, send, addContact, loginStart, loginVerify, logout, dismissNotice, clearContactError } =
+  const { state, send, typing, addContact, loginStart, loginVerify, logout, dismissNotice, clearContactError } =
     useTelegraph(open);
   const online = state.appConnected && state.serverConnected;
 
@@ -49,8 +49,10 @@ export function App() {
             me={state.me}
             contact={open}
             online={state.peers.includes(open)}
+            typing={state.typing.includes(open)}
             messages={state.messages.filter((m) => (m.from === state.me ? m.to === open : m.from === open))}
             onSend={(body) => send(open, body)}
+            onTyping={(on) => typing(open, on)}
             onBack={() => setOpen(null)}
           />
         ) : (

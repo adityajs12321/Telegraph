@@ -7,7 +7,7 @@
 //   GET  /keys/:name   look up someone's public keys
 //   POST /envelopes    send an envelope (signed, sender = envelope.from)
 // WebSocket:
-//   GET  /ws           server pushes `envelope`, `delivered` and `peers`; app sends `ack`
+//   GET  /ws           server pushes `envelope`, `delivered`, `peers` and `typing`; app sends `ack` and `typing`
 import http from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer } from "ws";

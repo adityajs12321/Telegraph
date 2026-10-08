@@ -2,7 +2,7 @@
 
 import { EventEmitter } from "node:events";
 import { WebSocket } from "ws";
-import { parseJson, SIGNED_OUT_CLOSE_CODE, type ClientFrame, type ServerFrame } from "@telegraph/shared";
+import { isValidName, parseJson, SIGNED_OUT_CLOSE_CODE, type ClientFrame, type ServerFrame } from "@telegraph/shared";
 
 const PING_MS = 30_000;
 
@@ -33,6 +33,8 @@ export class Hub extends EventEmitter<HubEvents> {
       const frame = parseJson(raw) as ClientFrame | null;
       if (frame?.type === "ack" && Array.isArray(frame.ids)) {
         this.emit("ack", name, frame.ids.filter((id): id is string => typeof id === "string"));
+      } else if (frame?.type === "typing" && isValidName(frame.to) && frame.to !== name) {
+        this.send(frame.to, { type: "typing", from: name, typing: frame.typing === true });
       }
     });
     ws.on("close", () => {

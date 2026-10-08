@@ -1,4 +1,4 @@
-// Connection to the local app: keeps chat state in sync over /ws and reconnects if it drops.
+// Connection to the local app: keeps chat state in sync and reconnects if it drops.
 
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import type { LoginStep, StoredMessage, UiCommand, UiEvent } from "@telegraph/shared";
@@ -9,12 +9,13 @@ export interface Notice {
 }
 
 export interface State {
-  auth: "unknown" | "logged-out" | "logged-in"; // unknown until the local app says which
-  login: { step: LoginStep; reason?: string; seq: number } | null; // latest reply to a login command
+  auth: "unknown" | "logged-out" | "logged-in";
+  login: { step: LoginStep; reason?: string; seq: number } | null;
   me: string;
-  appConnected: boolean; // browser <-> local app (assumed up until a connection attempt fails)
-  serverConnected: boolean; // local app <-> relay server
+  appConnected: boolean;
+  serverConnected: boolean;
   peers: string[];
+  typing: string[];
   contacts: string[];
   messages: StoredMessage[];
   unread: Record<string, number>;
@@ -36,6 +37,7 @@ const initialState: State = {
   appConnected: true,
   serverConnected: false,
   peers: [],
+  typing: [],
   contacts: [],
   messages: [],
   unread: {},
@@ -44,6 +46,8 @@ const initialState: State = {
 };
 
 let nextNoticeId = 1;
+const SERVER_DOWN = "Reconnecting…";
+
 const withNotice = (state: State, text: string): State => ({
   ...state,
   notices: [...state.notices, { id: nextNoticeId++, text }],
@@ -68,8 +72,6 @@ let nextLoginSeq = 1;
 
 function applyEvent(state: State, e: UiEvent, open: string | null): State {
   switch (e.type) {
-    // Both start a fresh screen, so notices from before are dropped. (The app sends the logout reason
-    // right after `logged-out`, so it still shows.)
     case "logged-out":
       return { ...initialState, auth: "logged-out", appConnected: state.appConnected };
     case "login":
@@ -84,6 +86,7 @@ function applyEvent(state: State, e: UiEvent, open: string | null): State {
         me: e.me,
         serverConnected: e.connected,
         peers: e.peers,
+        typing: [],
         contacts: e.contacts,
         messages: e.history,
       };
@@ -92,7 +95,8 @@ function applyEvent(state: State, e: UiEvent, open: string | null): State {
       const incoming = e.from !== state.me;
       const unread =
         incoming && e.from !== open ? { ...state.unread, [e.from]: (state.unread[e.from] ?? 0) + 1 } : state.unread;
-      return { ...state, messages: [...state.messages, e], unread };
+      const typing = state.typing.filter((name) => name !== e.from);
+      return { ...state, messages: [...state.messages, e], unread, typing };
     }
     case "status": {
       const next = {
@@ -102,37 +106,60 @@ function applyEvent(state: State, e: UiEvent, open: string | null): State {
       return e.reason ? withNotice(next, e.reason) : next;
     }
     case "peers":
-      return { ...state, peers: e.peers };
+      return { ...state, peers: e.peers, typing: state.typing.filter((name) => e.peers.includes(name)) };
+    case "typing": {
+      const others = state.typing.filter((name) => name !== e.from);
+      return { ...state, typing: e.typing ? [...others, e.from] : others };
+    }
     case "contacts":
       return { ...state, contacts: e.contacts, contactError: null };
     case "contact-error":
       return { ...state, contactError: e.reason };
     case "connection": {
-      const next = { ...state, serverConnected: e.connected };
-      return e.connected ? next : withNotice(next, "server disconnected — reconnecting…");
+      const next = { ...state, serverConnected: e.connected, typing: e.connected ? state.typing : [] };
+      if (e.connected) return { ...next, notices: next.notices.filter((n) => n.text !== SERVER_DOWN) };
+      return state.serverConnected ? withNotice(next, SERVER_DOWN) : next;
     }
     case "notice":
       return withNotice(state, e.reason);
   }
 }
 
-// `open` is the conversation on screen; its incoming messages don't count as unread.
+// typping timeout
+const TYPING_EXPIRE_MS = 6_000;
+
+// only count inactive chats as unread
 export function useTelegraph(open: string | null) {
   const [state, dispatch] = useReducer(reduce, initialState);
   const ws = useRef<WebSocket | null>(null);
   const openRef = useRef(open);
   openRef.current = open;
+  const typingTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
 
   useEffect(() => {
     let stopped = false;
     let retry: ReturnType<typeof setTimeout>;
 
+    const expireTyping = (from: string, typing: boolean) => {
+      clearTimeout(typingTimers.current.get(from));
+      typingTimers.current.delete(from);
+      if (!typing) return;
+      const timer = setTimeout(() => {
+        typingTimers.current.delete(from);
+        dispatch({ type: "event", event: { type: "typing", from, typing: false }, open: openRef.current });
+      }, TYPING_EXPIRE_MS);
+      typingTimers.current.set(from, timer);
+    };
+
     const connect = () => {
       const socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
       ws.current = socket;
       socket.onopen = () => dispatch({ type: "app-connection", connected: true });
-      socket.onmessage = (e) =>
-        dispatch({ type: "event", event: JSON.parse(e.data) as UiEvent, open: openRef.current });
+      socket.onmessage = (e) => {
+        const event = JSON.parse(e.data) as UiEvent;
+        if (event.type === "typing") expireTyping(event.from, event.typing);
+        dispatch({ type: "event", event, open: openRef.current });
+      };
       socket.onclose = () => {
         dispatch({ type: "app-connection", connected: false });
         if (!stopped) retry = setTimeout(connect, 1000);
@@ -143,6 +170,7 @@ export function useTelegraph(open: string | null) {
     return () => {
       stopped = true;
       clearTimeout(retry);
+      for (const timer of typingTimers.current.values()) clearTimeout(timer);
       ws.current?.close();
     };
   }, []);
@@ -160,6 +188,7 @@ export function useTelegraph(open: string | null) {
   return {
     state,
     send: (to: string, body: string) => command({ type: "send", to, body }),
+    typing: (to: string, typing: boolean) => command({ type: "typing", to, typing }),
     addContact: (name: string) => command({ type: "add-contact", name }),
     loginStart: (email: string) => command({ type: "login-start", email }),
     loginVerify: (email: string, code: string, name?: string) => command({ type: "login-verify", email, code, name }),

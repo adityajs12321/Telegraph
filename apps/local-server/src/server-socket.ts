@@ -13,6 +13,7 @@ interface SocketEvents {
   envelope: [env: Envelope];
   delivered: [id: string];
   peers: [peers: string[]];
+  typing: [from: string, typing: boolean];
   signedOut: []; // the server closed us because the account logged in on another device
   rejected: []; // 401 on connect: our keys may have been replaced while we were offline
 }
@@ -37,7 +38,11 @@ export class ServerSocket extends EventEmitter<SocketEvents> {
     const ws = new WebSocket(this.url, { headers: this.api.signedHeaders("GET", WS_PATH) });
     this.ws = ws;
 
-    ws.on("open", () => this.emit("open"));
+    let opened = false;
+    ws.on("open", () => {
+      opened = true;
+      this.emit("open");
+    });
     ws.on("message", (raw) => this.dispatch(parseJson(raw) as ServerFrame | null));
     ws.on("unexpected-response", (_req, res) => {
       if (res.statusCode === 401) this.emit("rejected");
@@ -45,7 +50,7 @@ export class ServerSocket extends EventEmitter<SocketEvents> {
     });
     ws.on("close", (code) => {
       if (this.ws !== ws || this.closed) return;
-      this.emit("close");
+      if (opened) this.emit("close");
       if (code === SIGNED_OUT_CLOSE_CODE) return void this.emit("signedOut");
       this.retry = setTimeout(() => this.connect(), this.reconnectMs);
     });
@@ -65,6 +70,10 @@ export class ServerSocket extends EventEmitter<SocketEvents> {
     if (this.connected) this.write({ type: "ack", ids });
   }
 
+  typing(to: string, typing: boolean) {
+    if (this.connected) this.write({ type: "typing", to, typing });
+  }
+
   private write(frame: ClientFrame) {
     this.ws!.send(JSON.stringify(frame));
   }
@@ -79,6 +88,9 @@ export class ServerSocket extends EventEmitter<SocketEvents> {
         break;
       case "peers":
         this.emit("peers", frame.peers.filter((p) => p !== this.name));
+        break;
+      case "typing":
+        this.emit("typing", frame.from, frame.typing);
         break;
     }
   }

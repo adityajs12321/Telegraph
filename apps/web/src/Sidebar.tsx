@@ -92,9 +92,13 @@ export function Sidebar({ state, online, open, onOpen, onAddContact, onClearCont
                 </span>
                 <span className="contact-text">
                   <span className="contact-name">{contact}</span>
-                  <span className="contact-preview">
-                    {last ? (last.from === state.me ? "You: " : "") + last.body : "No messages yet"}
-                  </span>
+                  {state.typing.includes(contact) ? (
+                    <span className="contact-preview typing">typing…</span>
+                  ) : (
+                    <span className="contact-preview">
+                      {last ? (last.from === state.me ? "You: " : "") + last.body : "No messages yet"}
+                    </span>
+                  )}
                 </span>
                 {unread > 0 && <span className="badge">{unread}</span>}
               </button>

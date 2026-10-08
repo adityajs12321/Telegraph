@@ -28,6 +28,7 @@ export class Session {
       if (this.logoutReason) reply({ type: "notice", reason: this.logoutReason });
     });
     ui.on("send", (to, body) => this.messenger?.send(to, body));
+    ui.on("typing", (to, typing) => this.messenger?.typing(to, typing));
     ui.on("addContact", (name, reply) => void this.messenger?.addContact(name, reply));
     ui.on("loginStart", (email, reply) => void this.sendCode(email, reply));
     ui.on("loginVerify", (email, code, name, reply) => void this.login(email, code, name, reply));

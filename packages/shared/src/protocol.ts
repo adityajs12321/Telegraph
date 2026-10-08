@@ -54,7 +54,7 @@ export interface Envelope {
   id: string;
   from: string;
   to: string;
-  toKey: string; // the recipient's boxPub it was encrypted for; the server rejects it if that key was replaced
+  toKey: string;
   epk: string;
   iv: string;
   ciphertext: string;
@@ -64,11 +64,14 @@ export interface Envelope {
 export type ServerFrame =
   | { type: "envelope"; envelope: Envelope }
   | { type: "delivered"; id: string } // sent to client after message succesfully delivered.
-  | { type: "peers"; peers: string[] }; // list of connected clients
+  | { type: "peers"; peers: string[] } // list of connected clients
+  | { type: "typing"; from: string; typing: boolean }; // relayed live, never stored
 
-export type ClientFrame = { type: "ack"; ids: string[] };
+export type ClientFrame =
+  | { type: "ack"; ids: string[] }
+  | { type: "typing"; to: string; typing: boolean };
 
-// POST /auth/login. `name` is only needed the first time an email logs in.
+// POST /auth/login. username is only needed the first time an email logs in.
 export interface LoginRequest extends PublicKeys {
   email: string;
   code: string;
@@ -99,6 +102,7 @@ export const AUTH_HEADERS = {
 export type UiCommand =
   | { type: "send"; to: string; body: string }
   | { type: "add-contact"; name: string }
+  | { type: "typing"; to: string; typing: boolean }
   | { type: "login-start"; email: string }
   | { type: "login-verify"; email: string; code: string; name?: string }
   | { type: "logout" };
@@ -118,6 +122,7 @@ export type UiEvent =
   | { type: "connection"; connected: boolean }
   | { type: "contacts"; contacts: string[] }
   | { type: "contact-error"; name: string; reason: string }
+  | { type: "typing"; from: string; typing: boolean }
   | { type: "notice"; reason: string };
 
 // ---- Helpers ----

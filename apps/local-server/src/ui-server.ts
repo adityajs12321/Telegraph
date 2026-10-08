@@ -19,6 +19,7 @@ const CONTENT_TYPES: Record<string, string> = {
 interface UiEvents {
   connect: [reply: (event: UiEvent) => void];
   send: [to: string, body: string];
+  typing: [to: string, typing: boolean];
   addContact: [name: string, reply: (event: UiEvent) => void];
   loginStart: [email: string, reply: (event: UiEvent) => void];
   loginVerify: [email: string, code: string, name: string | undefined, reply: (event: UiEvent) => void];
@@ -64,6 +65,8 @@ export class UiServer extends EventEmitter<UiEvents> {
       const cmd = parseJson(raw) as UiCommand | null;
       if (cmd?.type === "send" && typeof cmd.to === "string" && typeof cmd.body === "string") {
         if (cmd.to.trim() && cmd.body.trim()) this.emit("send", cmd.to.trim(), cmd.body);
+      } else if (cmd?.type === "typing" && typeof cmd.to === "string") {
+        this.emit("typing", cmd.to, cmd.typing === true);
       } else if (cmd?.type === "add-contact" && typeof cmd.name === "string") {
         this.emit("addContact", cmd.name.trim(), reply);
       } else if (cmd?.type === "login-start" && typeof cmd.email === "string") {

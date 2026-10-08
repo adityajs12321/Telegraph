@@ -31,6 +31,7 @@ export class Messenger {
     socket.on("envelope", (env) => void this.receive(env));
     socket.on("delivered", (id) => this.setStatus(id, "delivered"));
     socket.on("peers", (peers) => this.setPeers(peers));
+    socket.on("typing", (from, typing) => this.ui.broadcast({ type: "typing", from, typing }));
   }
 
   start() {
@@ -70,6 +71,10 @@ export class Messenger {
     this.listContact(to);
     this.ui.broadcast({ ...msg, status: "pending" });
     void this.deliver(msg);
+  }
+
+  typing(to: string, typing: boolean) {
+    this.socket.typing(to, typing);
   }
 
   // ---- Outgoing ----

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import type { MessageStatus, StoredMessage } from "@telegraph/shared";
 
 const STATUS_LABELS: Record<MessageStatus, string> = {
@@ -13,13 +13,16 @@ interface Props {
   me: string;
   contact: string;
   online: boolean;
+  typing: boolean;
   messages: StoredMessage[];
   onSend: (body: string) => boolean;
+  onTyping: (typing: boolean) => void;
   onBack: () => void;
 }
 
-export function Chat({ me, contact, online, messages, onSend, onBack }: Props) {
+export function Chat({ me, contact, online, typing, messages, onSend, onTyping, onBack }: Props) {
   const [body, setBody] = useState("");
+  const { keystroke, stopTyping } = useTypingSignal(onTyping);
   const log = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
 
@@ -32,7 +35,10 @@ export function Chat({ me, contact, online, messages, onSend, onBack }: Props) {
   const submit = (e: FormEvent) => {
     e.preventDefault();
     if (!body.trim()) return;
-    if (onSend(body)) setBody("");
+    if (onSend(body)) {
+      setBody("");
+      stopTyping();
+    }
   };
 
   return (
@@ -42,7 +48,9 @@ export function Chat({ me, contact, online, messages, onSend, onBack }: Props) {
           ‹
         </button>
         <h2>{contact}</h2>
-        <span className="chat-presence">{online ? "online" : "offline"}</span>
+        <span className={"chat-presence" + (typing ? " typing" : "")}>
+          {typing ? "typing…" : online ? "online" : "offline"}
+        </span>
       </header>
 
       <div className="log" ref={log}>
@@ -65,7 +73,11 @@ export function Chat({ me, contact, online, messages, onSend, onBack }: Props) {
         <input
           ref={input}
           value={body}
-          onChange={(e) => setBody(e.target.value)}
+          onChange={(e) => {
+            setBody(e.target.value);
+            if (e.target.value.trim()) keystroke();
+            else stopTyping();
+          }}
           placeholder={`Message ${contact}`}
           autoComplete="off"
         />
@@ -73,4 +85,33 @@ export function Chat({ me, contact, online, messages, onSend, onBack }: Props) {
       </form>
     </section>
   );
+}
+
+const TYPING_REPEAT_MS = 3_000; // resend `true` this often while typing
+const TYPING_IDLE_MS = 5_000; // no keys pressed for this long counts as stopped
+
+// Tells the contact we're typing.
+function useTypingSignal(onTyping: (typing: boolean) => void) {
+  const send = useRef(onTyping);
+  send.current = onTyping;
+  const lastSent = useRef(0); // 0 = not typing
+  const idle = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  const stopTyping = useCallback(() => {
+    clearTimeout(idle.current);
+    if (lastSent.current) send.current(false);
+    lastSent.current = 0;
+  }, []);
+
+  const keystroke = useCallback(() => {
+    clearTimeout(idle.current);
+    idle.current = setTimeout(stopTyping, TYPING_IDLE_MS);
+    if (Date.now() - lastSent.current < TYPING_REPEAT_MS) return;
+    lastSent.current = Date.now();
+    send.current(true);
+  }, [stopTyping]);
+
+  useEffect(() => stopTyping, [stopTyping]);
+
+  return { keystroke, stopTyping };
 }
