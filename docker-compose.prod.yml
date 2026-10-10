@@ -5,7 +5,7 @@ services:
       - "80:80"
       - "443:443"
     environment:
-      DOMAIN: ${DOMAIN:-}
+      DOMAIN: ${DOMAIN:?}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data # certificates; keeping them avoids hitting Let's Encrypt rate limits on restart
@@ -18,10 +18,10 @@ services:
       context: .
       dockerfile: apps/server/Dockerfile
     environment:
-      DATABASE_URL: ${DATABASE_URL:-}
-      CORS_ORIGIN: ${CORS_ORIGIN:-}
-      RESEND_API_KEY: ${RESEND_API_KEY:-}
-      EMAIL_FROM: ${EMAIL_FROM:-}
+      DATABASE_URL: ${DATABASE_URL:?}
+      CORS_ORIGIN: ${CORS_ORIGIN:?}
+      RESEND_API_KEY: ${RESEND_API_KEY:?}
+      EMAIL_FROM: ${EMAIL_FROM:?}
     restart: unless-stopped
 
 volumes:
