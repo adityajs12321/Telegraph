@@ -50,12 +50,6 @@ npm run app # http://localhost:5173 (Vite, hot reload)
 Each browser profile is its own device, so to chat with yourself use two profiles (or a normal and a private
 window). Only one tab per browser runs Telegraph at a time; other tabs wait until it's closed.
 
-## Deploy
-
-The app is static files: `VITE_SERVER_URL=https://<your-server> npm run build`, then host `apps/web/dist`
-anywhere (it must be served over HTTPS; WebCrypto and IndexedDB persistence need a secure context).
-On the server, set `CORS_ORIGIN` to the app's URL (default `*`).
-
 ## Accounts
 
 Open the app and log in with your email: the server emails a 6-digit code, and the first time an
@@ -105,16 +99,12 @@ Messages are de-duplicated by `id`, so retries and re-deliveries are always safe
    | `X-Telegraph-Timestamp` | current time in ms |
    | `X-Telegraph-Signature` | Ed25519 signature of `METHOD\npath\ntimestamp\nsha256(body)` |
 
-   Browsers can't set headers on a WebSocket, so `/ws` takes the same three values as query parameters
-   (`/ws?x-telegraph-name=…&x-telegraph-timestamp=…&x-telegraph-signature=…`).
-
    The server looks up alice's registered public key and checks the signature. Only the holder
    of alice's private key can produce it, and it covers the body, so it can't be reused for a
    different request. Timestamps more than 5 minutes off are rejected, which limits replays (and
    HTTPS stops anyone capturing requests in the first place).
 3. **Message-level checks.** Independently of the server, each message is signed by the sender
-   inside the encryption, and recipients pin contacts' public keys on first use. Even a malicious
-   server can't read messages, forge them, or swap someone's keys after you've talked to them.
+   inside the encryption, and recipients pin contacts' public keys on first use.
 
 ## Security model
 
@@ -156,6 +146,6 @@ WebSocket frames. Server → app: `{"type":"envelope","envelope":{…}}`, `{"typ
   (username, email and this device's keys; empty when logged out), `contacts` (pinned keys) and `address_book`
   (the names in your contact list). `localStorage["telegraph:logged-in"]` says which user the browser is logged in as.
   The app asks for [persistent storage](https://developer.mozilla.org/docs/Web/API/StorageManager/persist) so the
-  browser doesn't evict it under storage pressure; if the browser says no, you're told once at login.
+  browser doesn't evict it under storage pressure.
   To change the local schema, append a step to `MIGRATIONS` in `engine/db.ts`.
 - Server (PostgreSQL): `identities` (username, email, current public keys), `envelopes` and `login_codes`.

@@ -5,5 +5,4 @@ data/
 *.tsbuildinfo
 og.md
 graphify-out
-apps/server/drizzle
 .env
