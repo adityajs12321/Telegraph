@@ -15,6 +15,20 @@
       "when": 1791437124724,
       "tag": "0001_email_login",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791640696044,
+      "tag": "0002_bounces",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1791640898217,
+      "tag": "0003_receipts",
+      "breakpoints": true
     }
   ]
 }

@@ -28,7 +28,8 @@ export class Messenger {
     socket.on("open", () => this.run(this.onOpen()));
     socket.on("close", () => this.onClose());
     socket.on("envelope", (env) => this.run(this.receive(env)));
-    socket.on("delivered", (id) => this.run(this.setStatus(id, "delivered")));
+    socket.on("delivered", (id) => this.run(this.markDelivered(id)));
+    socket.on("bounced", (id) => this.run(this.resend(id)));
     socket.on("peers", (peers) => this.setPeers(peers));
     socket.on("typing", (from, typing) => this.emit({ type: "typing", from, typing }));
   }
@@ -100,6 +101,19 @@ export class Messenger {
     } finally {
       this.inFlight.delete(msg.id);
     }
+  }
+
+  // Confirms after saving, so the server keeps the receipt if we're closed before then.
+  private async markDelivered(id: string) {
+    await this.setStatus(id, "delivered");
+    if (!this.stopped) this.socket.receiptAck([id]);
+  }
+
+  // The server dropped it because the recipient logged in on a new device; deliver re-encrypts for their new key.
+  private async resend(id: string) {
+    if (!(await this.store.setStatus(id, "pending", "sent"))) return;
+    this.emit({ type: "status", id, status: "pending" });
+    await this.retryPending();
   }
 
   private async retryPending() {

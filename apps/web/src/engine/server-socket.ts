@@ -10,6 +10,7 @@ interface SocketEvents {
   close: [];
   envelope: [env: Envelope];
   delivered: [id: string];
+  bounced: [id: string];
   peers: [peers: string[]];
   typing: [from: string, typing: boolean];
   signedOut: []; // the server closed us because the account logged in on another device
@@ -70,6 +71,10 @@ export class ServerSocket {
     if (this.connected) this.write({ type: "ack", ids });
   }
 
+  receiptAck(ids: string[]) {
+    if (this.connected) this.write({ type: "receipt-ack", ids });
+  }
+
   typing(to: string, typing: boolean) {
     if (this.connected) this.write({ type: "typing", to, typing });
   }
@@ -89,6 +94,9 @@ export class ServerSocket {
         break;
       case "delivered":
         this.emit("delivered", frame.id);
+        break;
+      case "bounced":
+        this.emit("bounced", frame.id);
         break;
       case "peers":
         this.emit("peers", frame.peers.filter((p) => p !== this.name));

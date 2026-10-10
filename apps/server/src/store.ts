@@ -6,7 +6,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import pg from "pg";
 import type { Envelope, PublicKeys } from "@telegraph/shared";
-import { envelopes, identities, loginCodes } from "./schema.js";
+import { bounces, envelopes, identities, loginCodes, receipts } from "./schema.js";
 
 const MIGRATIONS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../drizzle");
 
@@ -54,11 +54,16 @@ export class Store {
   }
 
   // A new device logged in. Envelopes still waiting were encrypted for the old device's key and
-  // can't be opened by the new one, so they're dropped too.
-  async replaceKeys(name: string, keys: PublicKeys) {
-    await this.db.transaction(async (tx) => {
+  // can't be opened by the new one, so they're dropped and recorded as bounces for their senders.
+  async replaceKeys(name: string, keys: PublicKeys): Promise<Array<{ id: string; sender: string }>> {
+    return this.db.transaction(async (tx) => {
       await tx.update(identities).set(keys).where(eq(identities.name, name));
-      await tx.delete(envelopes).where(eq(envelopes.recipient, name));
+      const dropped = await tx
+        .delete(envelopes)
+        .where(eq(envelopes.recipient, name))
+        .returning({ id: envelopes.id, sender: envelopes.sender });
+      if (dropped.length > 0) await tx.insert(bounces).values(dropped).onConflictDoNothing();
+      return dropped;
     });
   }
 
@@ -105,12 +110,15 @@ export class Store {
     return row.n;
   }
 
-  // Ignores duplicates, so senders can safely retry.
+  // Ignores duplicates, so senders can safely retry. A resent bounce is resolved.
   async deposit(env: Envelope) {
-    await this.db
-      .insert(envelopes)
-      .values({ id: env.id, recipient: env.to, sender: env.from, payload: env })
-      .onConflictDoNothing();
+    await this.db.transaction(async (tx) => {
+      await tx
+        .insert(envelopes)
+        .values({ id: env.id, recipient: env.to, sender: env.from, payload: env })
+        .onConflictDoNothing();
+      await tx.delete(bounces).where(and(eq(bounces.id, env.id), eq(bounces.sender, env.from)));
+    });
   }
 
   async pendingFor(recipient: string): Promise<Envelope[]> {
@@ -122,17 +130,39 @@ export class Store {
     return rows.map((r) => r.payload);
   }
 
-  // Only deletes envelopes addressed to `recipient`. Returns the ones removed, so senders can be told.
+  async bouncesFor(sender: string): Promise<string[]> {
+    const rows = await this.db.select({ id: bounces.id }).from(bounces).where(eq(bounces.sender, sender));
+    return rows.map((r) => r.id);
+  }
+
+  // Only deletes envelopes addressed to `recipient`. Returns the ones removed, so senders can be told,
+  // and keeps a receipt for each until the sender confirms it.
   async remove(recipient: string, ids: string[]): Promise<Array<{ id: string; sender: string }>> {
     if (ids.length === 0) return [];
-    return this.db
-      .delete(envelopes)
-      .where(and(eq(envelopes.recipient, recipient), inArray(envelopes.id, ids)))
-      .returning({ id: envelopes.id, sender: envelopes.sender });
+    return this.db.transaction(async (tx) => {
+      const removed = await tx
+        .delete(envelopes)
+        .where(and(eq(envelopes.recipient, recipient), inArray(envelopes.id, ids)))
+        .returning({ id: envelopes.id, sender: envelopes.sender });
+      if (removed.length > 0) await tx.insert(receipts).values(removed).onConflictDoNothing();
+      return removed;
+    });
+  }
+
+  async receiptsFor(sender: string): Promise<string[]> {
+    const rows = await this.db.select({ id: receipts.id }).from(receipts).where(eq(receipts.sender, sender));
+    return rows.map((r) => r.id);
+  }
+
+  async clearReceipts(sender: string, ids: string[]) {
+    if (ids.length === 0) return;
+    await this.db.delete(receipts).where(and(eq(receipts.sender, sender), inArray(receipts.id, ids)));
   }
 
   async purgeOlderThan(cutoff: Date): Promise<number> {
     await this.db.delete(loginCodes).where(lt(loginCodes.expiresAt, new Date()));
+    await this.db.delete(bounces).where(lt(bounces.createdAt, cutoff));
+    await this.db.delete(receipts).where(lt(receipts.createdAt, cutoff));
     const purged = await this.db
       .delete(envelopes)
       .where(lt(envelopes.createdAt, cutoff))

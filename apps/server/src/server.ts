@@ -7,7 +7,7 @@
 //   GET  /keys/:name   look up someone's public keys
 //   POST /envelopes    send an envelope (signed, sender = envelope.from)
 // WebSocket:
-//   GET  /ws           signed with the auth headers as query parameters; server pushes `envelope`, `delivered`, `peers` and `typing`; app sends `ack` and `typing`
+//   GET  /ws           signed with the auth headers as query parameters; server pushes `envelope`, `delivered`, `bounced`, `peers` and `typing`; app sends `ack`, `receipt-ack` and `typing`
 import http from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer } from "ws";
@@ -115,8 +115,9 @@ const login: Handler = async (req) => {
   const existing = await store.nameForEmail(email);
   let response: LoginResponse;
   if (existing) {
-    await store.replaceKeys(existing, { signPub, boxPub });
+    const dropped = await store.replaceKeys(existing, { signPub, boxPub });
     hub.disconnect(existing, "signed in on another device");
+    for (const { id, sender } of dropped) hub.send(sender, { type: "bounced", id });
     response = { name: existing };
   } else if (name === undefined) {
     return [200, { needsName: true } satisfies LoginResponse]; // the code stays valid for the retry with a name
@@ -173,6 +174,8 @@ async function dispatch(raw: http.IncomingMessage): Promise<[number, unknown]> {
 hub.on("connect", async (name) => {
   try {
     for (const envelope of await store.pendingFor(name)) hub.send(name, { type: "envelope", envelope });
+    for (const id of await store.bouncesFor(name)) hub.send(name, { type: "bounced", id });
+    for (const id of await store.receiptsFor(name)) hub.send(name, { type: "delivered", id });
   } catch (err) {
     console.error(`[server] couldn't load pending envelopes for ${name}:`, err);
   }
@@ -183,6 +186,14 @@ hub.on("ack", async (name, ids) => {
     for (const { id, sender } of await store.remove(name, ids)) hub.send(sender, { type: "delivered", id });
   } catch (err) {
     console.error(`[server] couldn't remove acked envelopes for ${name}:`, err);
+  }
+});
+
+hub.on("receiptAck", async (name, ids) => {
+  try {
+    await store.clearReceipts(name, ids);
+  } catch (err) {
+    console.error(`[server] couldn't clear receipts for ${name}:`, err);
   }
 });
 

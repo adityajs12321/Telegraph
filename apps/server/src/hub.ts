@@ -9,6 +9,7 @@ const PING_MS = 30_000;
 interface HubEvents {
   connect: [name: string];
   ack: [name: string, ids: string[]];
+  receiptAck: [name: string, ids: string[]];
 }
 
 export class Hub extends EventEmitter<HubEvents> {
@@ -33,6 +34,8 @@ export class Hub extends EventEmitter<HubEvents> {
       const frame = parseJson(raw) as ClientFrame | null;
       if (frame?.type === "ack" && Array.isArray(frame.ids)) {
         this.emit("ack", name, frame.ids.filter((id): id is string => typeof id === "string"));
+      } else if (frame?.type === "receipt-ack" && Array.isArray(frame.ids)) {
+        this.emit("receiptAck", name, frame.ids.filter((id): id is string => typeof id === "string"));
       } else if (frame?.type === "typing" && isValidName(frame.to) && frame.to !== name) {
         this.send(frame.to, { type: "typing", from: name, typing: frame.typing === true });
       }

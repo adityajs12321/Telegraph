@@ -63,12 +63,14 @@ export interface Envelope {
 
 export type ServerFrame =
   | { type: "envelope"; envelope: Envelope }
-  | { type: "delivered"; id: string } // sent to client after message succesfully delivered.
+  | { type: "delivered"; id: string } // sent to client after message succesfully delivered; resent until receipt-ack
+  | { type: "bounced"; id: string } // recipient logged in on a new device before picking it up; resend it
   | { type: "peers"; peers: string[] } // list of connected clients
   | { type: "typing"; from: string; typing: boolean }; // relayed live, never stored
 
 export type ClientFrame =
   | { type: "ack"; ids: string[] }
+  | { type: "receipt-ack"; ids: string[] } // the sender saved these `delivered` statuses
   | { type: "typing"; to: string; typing: boolean };
 
 // POST /auth/login. username is only needed the first time an email logs in.

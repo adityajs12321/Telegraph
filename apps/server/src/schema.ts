@@ -23,6 +23,29 @@ export const envelopes = pgTable(
   (t) => [index("idx_envelopes_recipient").on(t.recipient, t.createdAt)]
 );
 
+// Envelopes dropped because the recipient logged in on a new device. The sender is told so it can
+// re-encrypt for the new key; cleared when the sender posts that id again.
+export const bounces = pgTable(
+  "bounces",
+  {
+    id: text("id").primaryKey(),
+    sender: text("sender").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("idx_bounces_sender").on(t.sender)]
+);
+
+// Delivery receipts the sender hasn't confirmed yet, so ones that happen while it's offline aren't lost.
+export const receipts = pgTable(
+  "receipts",
+  {
+    id: text("id").primaryKey(),
+    sender: text("sender").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("idx_receipts_sender").on(t.sender)]
+);
+
 // login codes dispatched to the user
 export const loginCodes = pgTable("login_codes", {
   email: text("email").primaryKey(),
