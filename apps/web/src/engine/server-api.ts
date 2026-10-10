@@ -9,7 +9,7 @@ import {
   type LoginResponse,
   type PublicKeys,
 } from "@telegraph/shared";
-import type { Account } from "./local-store.js";
+import type { Account } from "./local-store";
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -41,13 +41,13 @@ export class ServerApi {
   }
 
   // Proves this request comes from `name`
-  signedHeaders(method: string, path: string, body = ""): Record<string, string> {
+  async signedHeaders(method: string, path: string, body = ""): Promise<Record<string, string>> {
     if (!this.account) throw new Error("not logged in");
     const ts = String(Date.now());
     return {
       [AUTH_HEADERS.name]: this.account.name,
       [AUTH_HEADERS.timestamp]: ts,
-      [AUTH_HEADERS.signature]: signData(requestDigest(method, path, ts, body), this.account.signPriv),
+      [AUTH_HEADERS.signature]: await signData(await requestDigest(method, path, ts, body), this.account.signPriv),
     };
   }
 
@@ -55,7 +55,7 @@ export class ServerApi {
     const raw = body === undefined ? "" : JSON.stringify(body);
     const res = await fetch(this.baseUrl + path, {
       method,
-      headers: { "Content-Type": "application/json", ...(signed ? this.signedHeaders(method, path, raw) : {}) },
+      headers: { "Content-Type": "application/json", ...(signed ? await this.signedHeaders(method, path, raw) : {}) },
       body: raw || undefined,
       signal: AbortSignal.timeout(10_000),
     });

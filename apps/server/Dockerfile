@@ -4,7 +4,6 @@ WORKDIR /app
 COPY package.json package-lock.json tsconfig.base.json tsconfig.json ./
 COPY packages/shared/package.json packages/shared/
 COPY apps/server/package.json apps/server/
-COPY apps/local-server/package.json apps/local-server/
 COPY apps/web/package.json apps/web/
 RUN npm ci --ignore-scripts
 COPY packages/shared packages/shared

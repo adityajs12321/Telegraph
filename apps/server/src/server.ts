@@ -7,12 +7,12 @@
 //   GET  /keys/:name   look up someone's public keys
 //   POST /envelopes    send an envelope (signed, sender = envelope.from)
 // WebSocket:
-//   GET  /ws           server pushes `envelope`, `delivered`, `peers` and `typing`; app sends `ack` and `typing`
+//   GET  /ws           signed with the auth headers as query parameters; server pushes `envelope`, `delivered`, `peers` and `typing`; app sends `ack` and `typing`
 import http from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer } from "ws";
-import { isValidName, normalizeEmail, type Envelope, type LoginRequest, type LoginResponse } from "@telegraph/shared";
-import { authenticate, HttpError, type SignedRequest } from "./auth.js";
+import { AUTH_HEADERS, isValidName, normalizeEmail, type Envelope, type LoginRequest, type LoginResponse } from "@telegraph/shared";
+import { authenticate, HttpError, UsedSignatures, type SignedRequest } from "./auth.js";
 import { Hub } from "./hub.js";
 import { LoginCodes } from "./login-codes.js";
 import { createMailer } from "./mailer.js";
@@ -23,6 +23,15 @@ const DATABASE_URL = process.env.DATABASE_URL ?? "postgres://localhost:5432/tele
 const TTL_HOURS = Number(process.env.MESSAGE_TTL_HOURS ?? 24 * 7);
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_PER_RECIPIENT = 1000;
+// The web app calls the server from the browser, so it needs CORS. Set CORS_ORIGIN to the app's URL in production.
+const CORS_ORIGIN = process.env.CORS_ORIGIN ?? "*";
+
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": CORS_ORIGIN,
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": ["content-type", ...Object.values(AUTH_HEADERS)].join(", "),
+  "Access-Control-Max-Age": "86400",
+};
 
 const store = new Store(DATABASE_URL);
 const hub = new Hub();
@@ -178,13 +187,22 @@ hub.on("ack", async (name, ids) => {
 });
 
 const wss = new WebSocketServer({ noServer: true });
+const usedWsSignatures = new UsedSignatures();
 
 async function upgrade(req: http.IncomingMessage, socket: Duplex, head: Buffer) {
   let name: string;
   try {
-    const urlPath = new URL(req.url ?? "/", "http://x").pathname;
-    if (urlPath !== "/ws") throw new HttpError(404, "not found");
-    name = await authenticate({ headers: req.headers, method: "GET", path: urlPath, body: "" }, signPubFor);
+    const url = new URL(req.url ?? "/", "http://x");
+    if (url.pathname !== "/ws") throw new HttpError(404, "not found");
+    // Browsers can't set headers on a WebSocket, so the signed headers come as query parameters instead.
+    const headers = { ...req.headers };
+    for (const header of Object.values(AUTH_HEADERS)) {
+      const value = url.searchParams.get(header);
+      if (value !== null) headers[header] = value;
+    }
+    name = await authenticate({ headers, method: "GET", path: url.pathname, body: "" }, signPubFor);
+    // The app signs every connection attempt afresh, so a repeat can only be a replay (e.g. from a logged URL).
+    usedWsSignatures.claim(headers[AUTH_HEADERS.signature] as string, headers[AUTH_HEADERS.timestamp] as string);
   } catch (err) {
     const status = err instanceof HttpError ? err.status : 500;
     if (status === 500) console.error(err);
@@ -196,6 +214,7 @@ async function upgrade(req: http.IncomingMessage, socket: Duplex, head: Buffer) 
 
 // ---- Startup ----
 const server = http.createServer(async (req, res) => {
+  if (req.method === "OPTIONS") return void res.writeHead(204, CORS_HEADERS).end();
   let status: number;
   let payload: unknown;
   try {
@@ -205,7 +224,7 @@ const server = http.createServer(async (req, res) => {
     payload = { error: err instanceof HttpError ? err.message : "internal error" };
     if (status === 500) console.error(err);
   }
-  res.writeHead(status, { "Content-Type": "application/json" }).end(JSON.stringify(payload));
+  res.writeHead(status, { ...CORS_HEADERS, "Content-Type": "application/json" }).end(JSON.stringify(payload));
 });
 server.on("upgrade", upgrade);
 

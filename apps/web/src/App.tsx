@@ -8,7 +8,7 @@ export function App() {
   const [open, setOpen] = useState<string | null>(null);
   const { state, send, typing, addContact, loginStart, loginVerify, logout, dismissNotice, clearContactError } =
     useTelegraph(open);
-  const online = state.appConnected && state.serverConnected;
+  const online = state.serverConnected;
 
   useEffect(() => {
     if (state.auth !== "logged-in") setOpen(null);
@@ -17,7 +17,7 @@ export function App() {
   const status = (
     <>
       <Notices notices={state.notices} onDismiss={dismissNotice} />
-      {!state.appConnected && <div className="banner">Reconnecting…</div>}
+      {state.otherTab && <div className="banner">Telegraph is open in another tab. Close it to use Telegraph here.</div>}
     </>
   );
 

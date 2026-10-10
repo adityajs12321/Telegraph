@@ -1,13 +1,13 @@
-// Delivery logic for the logged-in account. Created on login, stopped on logout.
+// Delivery logic for the logged-in account.
 
-import { randomUUID } from "node:crypto";
 import { isValidName, open, seal, toWire, type ChatMessage, type Envelope, type MessageStatus, type PublicKeys, type UiEvent } from "@telegraph/shared";
-import type { Account, LocalStore } from "./local-store.js";
-import { ApiError, type ServerApi } from "./server-api.js";
-import type { ServerSocket } from "./server-socket.js";
-import type { UiServer } from "./ui-server.js";
+import type { Account, LocalStore } from "./local-store";
+import { ApiError, type ServerApi } from "./server-api";
+import type { ServerSocket } from "./server-socket";
 
 const PENDING_RETRY_MS = 15_000;
+
+export type Emit = (event: UiEvent) => void;
 
 export class Messenger {
   private name: string;
@@ -21,23 +21,23 @@ export class Messenger {
     private store: LocalStore,
     private api: ServerApi,
     private socket: ServerSocket,
-    private ui: UiServer
+    private emit: Emit
   ) {
     this.name = me.name;
-    store.addContactsFromMessages(me.name);
 
-    socket.on("open", () => this.onOpen());
+    socket.on("open", () => this.run(this.onOpen()));
     socket.on("close", () => this.onClose());
-    socket.on("envelope", (env) => void this.receive(env));
-    socket.on("delivered", (id) => this.setStatus(id, "delivered"));
+    socket.on("envelope", (env) => this.run(this.receive(env)));
+    socket.on("delivered", (id) => this.run(this.setStatus(id, "delivered")));
     socket.on("peers", (peers) => this.setPeers(peers));
-    socket.on("typing", (from, typing) => this.ui.broadcast({ type: "typing", from, typing }));
+    socket.on("typing", (from, typing) => this.emit({ type: "typing", from, typing }));
   }
 
   start() {
-    this.socket.connect();
-    this.retryTimer = setInterval(() => this.retryPending(), PENDING_RETRY_MS);
-    this.retryPending();
+    if (this.stopped) return;
+    this.run(this.socket.connect());
+    this.retryTimer = setInterval(() => this.run(this.retryPending()), PENDING_RETRY_MS);
+    this.run(this.retryPending());
   }
 
   stop() {
@@ -46,31 +46,30 @@ export class Messenger {
     this.socket.close();
   }
 
-  // rework needed
-  snapshot(): UiEvent {
+  async snapshot(): Promise<UiEvent> {
     return {
       type: "init",
       me: this.name,
       connected: this.socket.connected,
       peers: this.peers,
-      contacts: this.store.contactList(),
-      history: this.store.recentMessages(),
+      contacts: await this.store.contactList(),
+      history: await this.store.recentMessages(),
     };
   }
 
-  send(to: string, body: string) {
+  async send(to: string, body: string) {
     const msg: ChatMessage = {
       type: "message",
-      id: randomUUID(),
+      id: crypto.randomUUID(),
       from: this.name,
       to,
       body,
       timestamp: new Date().toISOString(),
     };
-    this.store.saveMessage(msg, "pending");
-    this.listContact(to);
-    this.ui.broadcast({ ...msg, status: "pending" });
-    void this.deliver(msg);
+    await this.store.saveMessage(msg, "pending");
+    await this.listContact(to);
+    this.emit({ ...msg, status: "pending" });
+    this.run(this.deliver(msg));
   }
 
   typing(to: string, typing: boolean) {
@@ -84,26 +83,27 @@ export class Messenger {
     this.inFlight.add(msg.id);
     try {
       try {
-        await this.api.send(seal(toWire(msg), this.me, (await this.keysFor(msg.to)).boxPub));
+        await this.api.send(await seal(toWire(msg), this.me, (await this.keysFor(msg.to)).boxPub));
       } catch (err) {
         if (!(err instanceof ApiError && err.status === 409)) throw err;
         // They logged in on a new device, so encrypt again for their new key.
-        await this.api.send(seal(toWire(msg), this.me, (await this.refreshKeys(msg.to)).boxPub));
+        await this.api.send(await seal(toWire(msg), this.me, (await this.refreshKeys(msg.to)).boxPub));
       }
       if (this.stopped) return; // database is closed when logged out
-      if (this.store.message(msg.id)?.status === "pending") this.setStatus(msg.id, "sent");
+      // Only if still pending: the `delivered` frame can beat this.
+      if (await this.store.setStatus(msg.id, "sent", "pending")) this.emit({ type: "status", id: msg.id, status: "sent" });
     } catch (err) {
       if (this.stopped) return;
       if (err instanceof ApiError && err.permanent) {
-        this.setStatus(msg.id, "failed", `${msg.to}: ${err.message}`);
+        await this.setStatus(msg.id, "failed", `${msg.to}: ${err.message}`);
       }
     } finally {
       this.inFlight.delete(msg.id);
     }
   }
 
-  private retryPending() {
-    for (const msg of this.store.messagesWithStatus("pending")) void this.deliver(msg);
+  private async retryPending() {
+    for (const msg of await this.store.messagesWithStatus("pending")) this.run(this.deliver(msg));
   }
 
   // ---- Incoming ----
@@ -118,19 +118,19 @@ export class Messenger {
       return this.drop(env, err as Error);
     }
     if (this.stopped) return;
-    if (this.store.saveMessage(msg, "received")) {
-      this.listContact(msg.from);
-      this.ui.broadcast({ ...msg, status: "received" });
+    if (await this.store.saveMessage(msg, "received")) {
+      await this.listContact(msg.from);
+      this.emit({ ...msg, status: "received" });
     }
     this.socket.ack([env.id]);
   }
 
   private async open(env: Envelope): Promise<ChatMessage> {
     try {
-      return open(env, this.me, (await this.keysFor(env.from)).signPub);
+      return await open(env, this.me, (await this.keysFor(env.from)).signPub);
     } catch (err) {
       if (err instanceof ApiError) throw err;
-      const pinned = this.store.contactKeys(env.from);
+      const pinned = await this.store.contactKeys(env.from);
       const current = await this.refreshKeys(env.from);
       if (current.signPub === pinned?.signPub) throw err;
       return open(env, this.me, current.signPub);
@@ -145,8 +145,8 @@ export class Messenger {
 
   // ---- Contacts ----
 
-  async addContact(name: string, reply: (event: UiEvent) => void) {
-    const fail = (reason: string) => reply({ type: "contact-error", name, reason });
+  async addContact(name: string) {
+    const fail = (reason: string) => this.emit({ type: "contact-error", name, reason });
     if (!isValidName(name)) return fail("names are letters, digits, _ or -, max 32 chars");
     if (name === this.name) return fail("that's you");
     // Always ask the server so that only legit users are listed
@@ -158,56 +158,62 @@ export class Messenger {
       return fail(`couldn't reach the server to check "${name}"; try again`);
     }
     if (this.stopped) return;
-    this.store.pinContactKeys(name, keys);
-    this.listContact(name);
+    await this.store.pinContactKeys(name, keys);
+    await this.listContact(name);
   }
 
-  private listContact(name: string) {
-    if (this.store.addContact(name)) this.ui.broadcast({ type: "contacts", contacts: this.store.contactList() });
+  private async listContact(name: string) {
+    if (await this.store.addContact(name)) this.emit({ type: "contacts", contacts: await this.store.contactList() });
   }
 
   // ---- Connection ----
 
-  private onOpen() {
+  private async onOpen() {
     this.log(`connected to server`);
-    this.ui.broadcast({ type: "connection", connected: true });
-    this.retryPending();
+    this.emit({ type: "connection", connected: true });
+    await this.retryPending();
   }
 
   private onClose() {
     this.setPeers([]);
-    this.ui.broadcast({ type: "connection", connected: false });
+    this.emit({ type: "connection", connected: false });
   }
 
   private setPeers(peers: string[]) {
     this.peers = peers;
-    this.ui.broadcast({ type: "peers", peers });
+    this.emit({ type: "peers", peers });
   }
 
   // ---- Helpers ----
 
   private async keysFor(name: string): Promise<PublicKeys> {
-    const pinned = this.store.contactKeys(name);
+    const pinned = await this.store.contactKeys(name);
     if (pinned) return pinned;
     const keys = await this.api.keysFor(name);
-    this.store.pinContactKeys(name, keys);
+    await this.store.pinContactKeys(name, keys);
     return keys;
   }
 
   // Tells the user if their keys ever change
   private async refreshKeys(name: string): Promise<PublicKeys> {
     const keys = await this.api.keysFor(name);
-    const pinned = this.store.contactKeys(name);
+    const pinned = await this.store.contactKeys(name);
     if (pinned?.signPub !== keys.signPub || pinned.boxPub !== keys.boxPub) {
-      this.store.replaceContactKeys(name, keys);
-      if (pinned) this.ui.broadcast({ type: "notice", reason: `${name} logged in on a new device; their key changed` });
+      await this.store.replaceContactKeys(name, keys);
+      if (pinned) this.emit({ type: "notice", reason: `${name} logged in on a new device; their key changed` });
     }
     return keys;
   }
 
-  private setStatus(id: string, status: MessageStatus, reason?: string) {
-    this.store.setStatus(id, status);
-    this.ui.broadcast({ type: "status", id, status, reason });
+  private async setStatus(id: string, status: MessageStatus, reason?: string) {
+    if (await this.store.setStatus(id, status)) this.emit({ type: "status", id, status, reason });
+  }
+
+  // Runs work in the background. Errors after logout are expected: the database is already closed.
+  run(work: Promise<unknown>) {
+    work.catch((err) => {
+      if (!this.stopped) console.error(`[${this.name}]`, err);
+    });
   }
 
   private log(text: string) {

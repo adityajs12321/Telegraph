@@ -4,29 +4,25 @@ Telegraph is an end to end encrypted messaging service that works in your browse
 
 ## Requirements
 
-Node.js 22.5+ (apps use the built-in `node:sqlite` module). The server needs PostgreSQL.
+Node.js 22+ and PostgreSQL for the server. The app runs entirely in the browser (it needs WebCrypto Ed25519/X25519, IndexedDB and Web Locks.
 
 ## Project structure
 
 ```
 apps/
-  web/              browser UI (React + Vite)
+  web/              the app: React UI
     src/
-      useTelegraph.ts     WebSocket connection to the local app
+      useTelegraph.ts     runs the session in this tab and keeps the UI state in sync
       Login.tsx           
       Sidebar.tsx         contacts list
       Chat.tsx            conversation with the selected contact
-  local-server/     local backend
-    src/
-      main.ts             entry point
-      config.ts           CLI flags / env vars
-      session.ts          logged in/out: login, logout, starts and stops the messenger
-      messenger.ts        encrypt + send, receive + decrypt + ack, message statuses
-      server-api.ts       signed HTTP client for the server
-      server-socket.ts    signed WebSocket to the server (reconnects)
-      ui-server.ts        HTTP + WebSocket for the browser
-      local-store.ts      SQLite: messages, logged-in account, pinned keys, address book
-      local-migrations.ts schema changes for the local db
+      engine/
+        session.ts          logged in/out: login, logout, starts and stops the messenger
+        messenger.ts        encrypt + send, receive + decrypt + ack, message statuses
+        server-api.ts       signed HTTP client for the server
+        server-socket.ts    signed WebSocket to the server (reconnects)
+        local-store.ts      IndexedDB: messages, logged-in account, pinned keys, address book
+        db.ts               IndexedDB schema migrations + helpers
   server/           hosted server: keys, encrypted delivery, docker setup
     src/
       server.ts           
@@ -48,12 +44,17 @@ packages/
 ```bash
 npm install
 docker compose up --build # relay server + Postgres
-npm run app -- --profile alice --port 3001      # http://localhost:3001
-npm run app -- --profile bob   --port 3002      # http://localhost:3002
+npm run app # http://localhost:5173 (Vite, hot reload)
 ```
 
-`npm run app` rebuilds the web UI before starting. To work on the UI with hot reload, run an app and then
-`APP_PORT=3001 npm run dev -w @telegraph/web` (Vite forwards `/ws` to that app).
+Each browser profile is its own device, so to chat with yourself use two profiles (or a normal and a private
+window). Only one tab per browser runs Telegraph at a time; other tabs wait until it's closed.
+
+## Deploy
+
+The app is static files: `VITE_SERVER_URL=https://<your-server> npm run build`, then host `apps/web/dist`
+anywhere (it must be served over HTTPS; WebCrypto and IndexedDB persistence need a secure context).
+On the server, set `CORS_ORIGIN` to the app's URL (default `*`).
 
 ## Accounts
 
@@ -64,8 +65,8 @@ email logs in you pick a username.
   account is logged in on **one device at a time**. Logging in somewhere else signs the other device
   out immediately.
 - Contacts notice the new key automatically, and their apps refetch it. Messages that were waiting for the old device are dropped.
-- Each user gets their own database, `data/<username>.db`. Logging out only forgets
-  that device's keys, so switching users on one app just switches files, and logging back in shows your messages again.
+- Each user gets their own IndexedDB database in the browser, `telegraph-<username>`. Logging out only forgets
+  that device's keys, so switching users in one browser just switches databases, and logging back in shows your messages again.
 - Codes expire after 10 minutes, allow 5 tries, and can be re-requested every 30 seconds.
 
 ## Contacts
@@ -75,16 +76,10 @@ that user exists and only adds them if it does. If the server
 can't be reached, nothing is added and you're asked to try again.
 Anyone you message, or who messages you, is added to the list automatically.
 
-App options (also readable from env vars `PROFILE`, `PORT`, `SERVER`, `DATA_DIR`):
+App build setting: `VITE_SERVER_URL` (default `http://localhost:8080`), the server URL.
 
-| flag | default | |
-|---|---|---|
-| `--profile` | `default` | names this app instance, which remembers who's logged in (`<data-dir>/profiles/<profile>.json`); use a different one per app running on the same machine |
-| `--port` | `3000` | local UI port |
-| `--server` | `http://localhost:8080` | server URL |
-| `--data-dir` | `<repo>/data` | where the local db is stored |
-
-Server env vars: `PORT` (8080), `DATABASE_URL` (`postgres://localhost:5432/telegraph`), `MESSAGE_TTL_HOURS` (default = 1 days).
+Server env vars: `PORT` (8080), `DATABASE_URL` (`postgres://localhost:5432/telegraph`), `MESSAGE_TTL_HOURS` (default = 7 days),
+`CORS_ORIGIN` (`*`).
 
 ## How delivery works
 
@@ -109,6 +104,9 @@ Messages are de-duplicated by `id`, so retries and re-deliveries are always safe
    | `X-Telegraph-Name` | `alice` |
    | `X-Telegraph-Timestamp` | current time in ms |
    | `X-Telegraph-Signature` | Ed25519 signature of `METHOD\npath\ntimestamp\nsha256(body)` |
+
+   Browsers can't set headers on a WebSocket, so `/ws` takes the same three values as query parameters
+   (`/ws?x-telegraph-name=…&x-telegraph-timestamp=…&x-telegraph-signature=…`).
 
    The server looks up alice's registered public key and checks the signature. Only the holder
    of alice's private key can produce it, and it covers the body, so it can't be reused for a
@@ -154,8 +152,10 @@ WebSocket frames. Server → app: `{"type":"envelope","envelope":{…}}`, `{"typ
 
 ## Storage
 
-- App: `data/<username>.db` (one per user) holds tables `messages`, `identity` (username, email and this device's
-  keys; empty when logged out), `contacts` (pinned keys) and `address_book` (the names in your contact list).
-  `data/profiles/<profile>.json` (`{"name":"alice"}`) says which user each app instance is logged in as.
-  To change the local schema, append a step to `MIGRATIONS` in `local-migrations.ts`.
+- App (IndexedDB, in the browser): `telegraph-<username>` (one per user) holds object stores `messages`, `identity`
+  (username, email and this device's keys; empty when logged out), `contacts` (pinned keys) and `address_book`
+  (the names in your contact list). `localStorage["telegraph:logged-in"]` says which user the browser is logged in as.
+  The app asks for [persistent storage](https://developer.mozilla.org/docs/Web/API/StorageManager/persist) so the
+  browser doesn't evict it under storage pressure; if the browser says no, you're told once at login.
+  To change the local schema, append a step to `MIGRATIONS` in `engine/db.ts`.
 - Server (PostgreSQL): `identities` (username, email, current public keys), `envelopes` and `login_codes`.

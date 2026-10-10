@@ -6,9 +6,6 @@
     },
     {
       "path": "apps/server"
-    },
-    {
-      "path": "apps/local-server"
     }
   ]
 }

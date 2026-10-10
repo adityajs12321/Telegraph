@@ -1,7 +1,8 @@
-// Connection to the local app: keeps chat state in sync and reconnects if it drops.
+// Runs the app's Session in this tab and keeps chat state in sync with it.
 
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import type { LoginStep, StoredMessage, UiCommand, UiEvent } from "@telegraph/shared";
+import { Session } from "./engine/session";
 
 export interface Notice {
   id: number;
@@ -12,7 +13,7 @@ export interface State {
   auth: "unknown" | "logged-out" | "logged-in";
   login: { step: LoginStep; reason?: string; seq: number } | null;
   me: string;
-  appConnected: boolean;
+  otherTab: boolean; // Telegraph is running in another tab of this browser
   serverConnected: boolean;
   peers: string[];
   typing: string[];
@@ -25,7 +26,7 @@ export interface State {
 
 type Action =
   | { type: "event"; event: UiEvent; open: string | null }
-  | { type: "app-connection"; connected: boolean }
+  | { type: "other-tab"; otherTab: boolean }
   | { type: "read"; contact: string }
   | { type: "dismiss"; id: number }
   | { type: "clear-contact-error" };
@@ -34,7 +35,7 @@ const initialState: State = {
   auth: "unknown",
   login: null,
   me: "",
-  appConnected: true,
+  otherTab: false,
   serverConnected: false,
   peers: [],
   typing: [],
@@ -55,8 +56,8 @@ const withNotice = (state: State, text: string): State => ({
 
 function reduce(state: State, action: Action): State {
   switch (action.type) {
-    case "app-connection":
-      return { ...state, appConnected: action.connected };
+    case "other-tab":
+      return { ...state, otherTab: action.otherTab };
     case "read":
       return { ...state, unread: { ...state.unread, [action.contact]: 0 } };
     case "dismiss":
@@ -73,7 +74,7 @@ let nextLoginSeq = 1;
 function applyEvent(state: State, e: UiEvent, open: string | null): State {
   switch (e.type) {
     case "logged-out":
-      return { ...initialState, auth: "logged-out", appConnected: state.appConnected };
+      return { ...initialState, auth: "logged-out" };
     case "login":
       return { ...state, login: { step: e.step, reason: e.reason, seq: nextLoginSeq++ } };
     case "init":
@@ -128,17 +129,21 @@ function applyEvent(state: State, e: UiEvent, open: string | null): State {
 // typping timeout
 const TYPING_EXPIRE_MS = 6_000;
 
+// Held by the tab that runs the Session. The server keeps one connection per account, so two tabs
+// would keep replacing each other's; later tabs wait until the first one closes.
+const TAB_LOCK = "telegraph-session";
+
 // only count inactive chats as unread
 export function useTelegraph(open: string | null) {
   const [state, dispatch] = useReducer(reduce, initialState);
-  const ws = useRef<WebSocket | null>(null);
+  const session = useRef<Session | null>(null);
   const openRef = useRef(open);
   openRef.current = open;
   const typingTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
 
   useEffect(() => {
-    let stopped = false;
-    let retry: ReturnType<typeof setTimeout>;
+    const abort = new AbortController();
+    let release: () => void = () => {};
 
     const expireTyping = (from: string, typing: boolean) => {
       clearTimeout(typingTimers.current.get(from));
@@ -151,27 +156,37 @@ export function useTelegraph(open: string | null) {
       typingTimers.current.set(from, timer);
     };
 
-    const connect = () => {
-      const socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
-      ws.current = socket;
-      socket.onopen = () => dispatch({ type: "app-connection", connected: true });
-      socket.onmessage = (e) => {
-        const event = JSON.parse(e.data) as UiEvent;
-        if (event.type === "typing") expireTyping(event.from, event.typing);
-        dispatch({ type: "event", event, open: openRef.current });
-      };
-      socket.onclose = () => {
-        dispatch({ type: "app-connection", connected: false });
-        if (!stopped) retry = setTimeout(connect, 1000);
-      };
+    const emit = (event: UiEvent) => {
+      if (event.type === "typing") expireTyping(event.from, event.typing);
+      dispatch({ type: "event", event, open: openRef.current });
     };
-    connect();
+
+    // Runs the session until this tab closes or unmounts.
+    const run = () => {
+      if (abort.signal.aborted) return;
+      dispatch({ type: "other-tab", otherTab: false });
+      session.current = new Session(emit);
+      void session.current.start();
+      return new Promise<void>((resolve) => (release = resolve));
+    };
+
+    navigator.locks
+      .request(TAB_LOCK, { ifAvailable: true }, (lock) => {
+        if (lock) return run();
+        dispatch({ type: "other-tab", otherTab: true });
+        return navigator.locks.request(TAB_LOCK, { signal: abort.signal }, run);
+      })
+      .catch(() => {
+        // aborted while waiting for the other tab
+      });
 
     return () => {
-      stopped = true;
-      clearTimeout(retry);
+      abort.abort();
+      session.current?.shutdown();
+      session.current = null;
+      release();
       for (const timer of typingTimers.current.values()) clearTimeout(timer);
-      ws.current?.close();
+      typingTimers.current.clear();
     };
   }, []);
 
@@ -180,11 +195,10 @@ export function useTelegraph(open: string | null) {
   }, [open]);
 
   const command = useCallback((cmd: UiCommand) => {
-    if (ws.current?.readyState !== WebSocket.OPEN) return false;
-    ws.current.send(JSON.stringify(cmd));
+    if (!session.current) return false;
+    session.current.command(cmd);
     return true;
   }, []);
-
   return {
     state,
     send: (to: string, body: string) => command({ type: "send", to, body }),
