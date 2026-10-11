@@ -88,7 +88,6 @@ export function Sidebar({ state, online, open, onOpen, onAddContact, onClearCont
               >
                 <span className="avatar">
                   {contact[0].toUpperCase()}
-                  {state.peers.includes(contact) && <span className="presence" title="online" />}
                 </span>
                 <span className="contact-text">
                   <span className="contact-name">{contact}</span>

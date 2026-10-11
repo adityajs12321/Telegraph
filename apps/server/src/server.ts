@@ -7,7 +7,7 @@
 //   GET  /keys/:name   look up someone's public keys
 //   POST /envelopes    send an envelope (signed, sender = envelope.from)
 // WebSocket:
-//   GET  /ws           signed with the auth headers as query parameters; server pushes `envelope`, `delivered`, `bounced`, `peers` and `typing`; app sends `ack`, `receipt-ack` and `typing`
+//   GET  /ws           signed with the auth headers as query parameters; server pushes `envelope`, `delivered`, `bounced`, `presence` and `typing`; app sends `ack`, `receipt-ack`, `typing` and `watch`
 import http from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer } from "ws";
@@ -16,13 +16,16 @@ import { authenticate, HttpError, UsedSignatures, type SignedRequest } from "./a
 import { Hub } from "./hub.js";
 import { LoginCodes } from "./login-codes.js";
 import { createMailer } from "./mailer.js";
-import { Store } from "./store.js";
+import { isDatabaseBusy, Store } from "./store.js";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const DATABASE_URL = process.env.DATABASE_URL ?? "postgres://localhost:5432/telegraph";
 const TTL_HOURS = Number(process.env.MESSAGE_TTL_HOURS ?? 24 * 7);
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_PER_RECIPIENT = 1000;
+// Database connections. Each query waits a network round trip, so this bounds how many requests can be in flight.
+// With Neon, use the pooled connection string (host contains "-pooler") so this can go well past its direct limit.
+const DB_POOL_SIZE = Number(process.env.DB_POOL_SIZE ?? 20);
 // The web app calls the server from the browser, so it needs CORS. Set CORS_ORIGIN to the app's URL in production.
 const CORS_ORIGIN = process.env.CORS_ORIGIN ?? "*";
 
@@ -33,7 +36,7 @@ const CORS_HEADERS = {
   "Access-Control-Max-Age": "86400",
 };
 
-const store = new Store(DATABASE_URL);
+const store = new Store(DATABASE_URL, { poolSize: DB_POOL_SIZE });
 const hub = new Hub();
 const loginCodes = new LoginCodes(store, createMailer());
 
@@ -141,9 +144,7 @@ const postEnvelope: Handler = async (req) => {
   const recipient = await store.keysFor(env.to);
   if (!recipient) throw new HttpError(404, "unknown recipient");
   if (env.toKey !== recipient.boxPub) throw new HttpError(409, "recipient's key changed");
-  if ((await store.countFor(env.to)) >= MAX_PER_RECIPIENT) throw new HttpError(429, "too many undelivered messages for recipient");
-
-  await store.deposit(env);
+  if (!(await store.deposit(env, MAX_PER_RECIPIENT))) throw new HttpError(429, "too many undelivered messages for recipient");
   hub.send(env.to, { type: "envelope", envelope: env });
   return [201, { id: env.id }];
 };
@@ -173,9 +174,15 @@ async function dispatch(raw: http.IncomingMessage): Promise<[number, unknown]> {
 // ---- WebSocket ----
 hub.on("connect", async (name) => {
   try {
-    for (const envelope of await store.pendingFor(name)) hub.send(name, { type: "envelope", envelope });
-    for (const id of await store.bouncesFor(name)) hub.send(name, { type: "bounced", id });
-    for (const id of await store.receiptsFor(name)) hub.send(name, { type: "delivered", id });
+    // In parallel, so a reconnect costs one database round trip of waiting rather than three.
+    const [pending, bounced, delivered] = await Promise.all([
+      store.pendingFor(name),
+      store.bouncesFor(name),
+      store.receiptsFor(name),
+    ]);
+    for (const envelope of pending) hub.send(name, { type: "envelope", envelope });
+    for (const id of bounced) hub.send(name, { type: "bounced", id });
+    for (const id of delivered) hub.send(name, { type: "delivered", id });
   } catch (err) {
     console.error(`[server] couldn't load pending envelopes for ${name}:`, err);
   }
@@ -215,7 +222,7 @@ async function upgrade(req: http.IncomingMessage, socket: Duplex, head: Buffer) 
     // The app signs every connection attempt afresh, so a repeat can only be a replay (e.g. from a logged URL).
     usedWsSignatures.claim(headers[AUTH_HEADERS.signature] as string, headers[AUTH_HEADERS.timestamp] as string);
   } catch (err) {
-    const status = err instanceof HttpError ? err.status : 500;
+    const status = err instanceof HttpError ? err.status : isDatabaseBusy(err) ? 503 : 500;
     if (status === 500) console.error(err);
     socket.end(`HTTP/1.1 ${status} ${http.STATUS_CODES[status]}\r\nConnection: close\r\n\r\n`);
     return;
@@ -231,10 +238,13 @@ const server = http.createServer(async (req, res) => {
   try {
     [status, payload] = await dispatch(req);
   } catch (err) {
+    if (isDatabaseBusy(err)) err = new HttpError(503, "server busy, try again");
     status = err instanceof HttpError ? err.status : 500;
     payload = { error: err instanceof HttpError ? err.message : "internal error" };
     if (status === 500) console.error(err);
   }
+  // The client gave up (e.g. timed out) while we worked; there's no one to answer.
+  if (res.destroyed) return;
   res.writeHead(status, { ...CORS_HEADERS, "Content-Type": "application/json" }).end(JSON.stringify(payload));
 });
 server.on("upgrade", upgrade);

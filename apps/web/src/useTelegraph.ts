@@ -15,7 +15,7 @@ export interface State {
   me: string;
   otherTab: boolean; // Telegraph is running in another tab of this browser
   serverConnected: boolean;
-  peers: string[];
+  presence: { name: string; online: boolean } | null; // of the open chat's contact, once the server has said
   typing: string[];
   contacts: string[];
   messages: StoredMessage[];
@@ -37,7 +37,7 @@ const initialState: State = {
   me: "",
   otherTab: false,
   serverConnected: false,
-  peers: [],
+  presence: null,
   typing: [],
   contacts: [],
   messages: [],
@@ -86,7 +86,7 @@ function applyEvent(state: State, e: UiEvent, open: string | null): State {
         unread: {},
         me: e.me,
         serverConnected: e.connected,
-        peers: e.peers,
+        presence: null,
         typing: [],
         contacts: e.contacts,
         messages: e.history,
@@ -106,8 +106,10 @@ function applyEvent(state: State, e: UiEvent, open: string | null): State {
       };
       return e.reason ? withNotice(next, e.reason) : next;
     }
-    case "peers":
-      return { ...state, peers: e.peers, typing: state.typing.filter((name) => e.peers.includes(name)) };
+    case "presence": {
+      const typing = e.online ? state.typing : state.typing.filter((name) => name !== e.name);
+      return { ...state, presence: { name: e.name, online: e.online }, typing };
+    }
     case "typing": {
       const others = state.typing.filter((name) => name !== e.from);
       return { ...state, typing: e.typing ? [...others, e.from] : others };
@@ -117,7 +119,7 @@ function applyEvent(state: State, e: UiEvent, open: string | null): State {
     case "contact-error":
       return { ...state, contactError: e.reason };
     case "connection": {
-      const next = { ...state, serverConnected: e.connected, typing: e.connected ? state.typing : [] };
+      const next = e.connected ? { ...state, serverConnected: true } : { ...state, serverConnected: false, typing: [], presence: null };
       if (e.connected) return { ...next, notices: next.notices.filter((n) => n.text !== SERVER_DOWN) };
       return state.serverConnected ? withNotice(next, SERVER_DOWN) : next;
     }
@@ -193,6 +195,11 @@ export function useTelegraph(open: string | null) {
   useEffect(() => {
     if (open) dispatch({ type: "read", contact: open });
   }, [open]);
+
+  // Only the open chat's presence is tracked; the server sends it now and whenever it changes.
+  useEffect(() => {
+    if (state.auth === "logged-in") session.current?.command({ type: "watch", name: open });
+  }, [open, state.auth]);
 
   const command = useCallback((cmd: UiCommand) => {
     if (!session.current) return false;

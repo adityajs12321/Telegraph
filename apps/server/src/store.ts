@@ -1,7 +1,7 @@
 // Server persistence (PostgreSQL via Drizzle)
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { and, asc, count, eq, gt, inArray, lt, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, lt, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import pg from "pg";
@@ -9,14 +9,29 @@ import type { Envelope, PublicKeys } from "@telegraph/shared";
 import { bounces, envelopes, identities, loginCodes, receipts } from "./schema.js";
 
 const MIGRATIONS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../drizzle");
+const MAX_CACHED_KEYS = 100_000;
+
+// True if a query failed because every database connection stayed busy for too long. The server answers 503
+// then, instead of letting requests queue up without limit. Drizzle may wrap the driver's error as `cause`.
+export function isDatabaseBusy(err: unknown): boolean {
+  for (let e = err; e instanceof Error; e = e.cause) {
+    if (/timeout exceeded when trying to connect/i.test(e.message)) return true;
+  }
+  return false;
+}
 
 export class Store {
   private pool: pg.Pool;
   private db;
+  // Public keys are read on every signed request but only change on login, so they're kept in memory.
+  // Assumes a single server process, like the hub.
+  private keys = new Map<string, PublicKeys>();
+  private keysVersion = 0; // bumped whenever keys change, so a lookup that raced the change isn't cached
 
-  constructor(databaseUrl: string) {
-    // A small pool is plenty for one server process and keeps memory low.
-    this.pool = new pg.Pool({ connectionString: databaseUrl, max: 5 });
+  // Every query is a network round trip to the database, so connections spend most of their time waiting;
+  // more of them lets more requests wait at once. `waitMs` bounds how long a request queues for one.
+  constructor(databaseUrl: string, { poolSize = 20, waitMs = 5000 } = {}) {
+    this.pool = new pg.Pool({ connectionString: databaseUrl, max: poolSize, connectionTimeoutMillis: waitMs });
     this.db = drizzle(this.pool);
   }
 
@@ -29,10 +44,17 @@ export class Store {
   }
 
   async keysFor(name: string): Promise<PublicKeys | null> {
+    const cached = this.keys.get(name);
+    if (cached) return cached;
+    const version = this.keysVersion;
     const [row] = await this.db
       .select({ signPub: identities.signPub, boxPub: identities.boxPub })
       .from(identities)
       .where(eq(identities.name, name));
+    if (row && version === this.keysVersion) {
+      if (this.keys.size >= MAX_CACHED_KEYS) this.keys.clear();
+      this.keys.set(name, row);
+    }
     return row ?? null;
   }
 
@@ -64,6 +86,9 @@ export class Store {
         .returning({ id: envelopes.id, sender: envelopes.sender });
       if (dropped.length > 0) await tx.insert(bounces).values(dropped).onConflictDoNothing();
       return dropped;
+    }).finally(() => {
+      this.keysVersion++;
+      this.keys.delete(name);
     });
   }
 
@@ -105,20 +130,22 @@ export class Store {
 
   // ---- Envelopes ----
 
-  async countFor(recipient: string): Promise<number> {
-    const [row] = await this.db.select({ n: count() }).from(envelopes).where(eq(envelopes.recipient, recipient));
-    return row.n;
-  }
-
+  // Stores the envelope unless its recipient already has `max` waiting, and returns false in that case.
   // Ignores duplicates, so senders can safely retry. A resent bounce is resolved.
-  async deposit(env: Envelope) {
-    await this.db.transaction(async (tx) => {
-      await tx
-        .insert(envelopes)
-        .values({ id: env.id, recipient: env.to, sender: env.from, payload: env })
-        .onConflictDoNothing();
-      await tx.delete(bounces).where(and(eq(bounces.id, env.id), eq(bounces.sender, env.from)));
-    });
+  // One statement, so it costs a single round trip to the database and is atomic on its own.
+  async deposit(env: Envelope, max: number): Promise<boolean> {
+    const { rows } = await this.pool.query<{ n: number }>(
+      `WITH queued AS (SELECT count(*)::int AS n FROM envelopes WHERE recipient = $2),
+       inserted AS (
+         INSERT INTO envelopes (id, recipient, sender, payload)
+         SELECT $1, $2, $3, $4 FROM queued WHERE n < $5
+         ON CONFLICT DO NOTHING
+       ),
+       unbounced AS (DELETE FROM bounces WHERE id = $1 AND sender = $3 AND (SELECT n FROM queued) < $5)
+       SELECT n FROM queued`,
+      [env.id, env.to, env.from, JSON.stringify(env), max]
+    );
+    return rows[0].n < max;
   }
 
   async pendingFor(recipient: string): Promise<Envelope[]> {
@@ -137,16 +164,16 @@ export class Store {
 
   // Only deletes envelopes addressed to `recipient`. Returns the ones removed, so senders can be told,
   // and keeps a receipt for each until the sender confirms it.
+  // One statement, so a single round trip.
   async remove(recipient: string, ids: string[]): Promise<Array<{ id: string; sender: string }>> {
     if (ids.length === 0) return [];
-    return this.db.transaction(async (tx) => {
-      const removed = await tx
-        .delete(envelopes)
-        .where(and(eq(envelopes.recipient, recipient), inArray(envelopes.id, ids)))
-        .returning({ id: envelopes.id, sender: envelopes.sender });
-      if (removed.length > 0) await tx.insert(receipts).values(removed).onConflictDoNothing();
-      return removed;
-    });
+    const { rows } = await this.pool.query<{ id: string; sender: string }>(
+      `WITH removed AS (DELETE FROM envelopes WHERE recipient = $1 AND id = ANY($2) RETURNING id, sender),
+       kept AS (INSERT INTO receipts (id, sender) SELECT id, sender FROM removed ON CONFLICT DO NOTHING)
+       SELECT id, sender FROM removed`,
+      [recipient, ids]
+    );
+    return rows;
   }
 
   async receiptsFor(sender: string): Promise<string[]> {

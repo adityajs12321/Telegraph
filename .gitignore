@@ -6,3 +6,5 @@ data/
 og.md
 graphify-out
 .env
+loadtest/users.json
+loadtest/results/

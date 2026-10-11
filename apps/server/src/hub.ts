@@ -15,6 +15,8 @@ interface HubEvents {
 export class Hub extends EventEmitter<HubEvents> {
   private sockets = new Map<string, WebSocket>();
   private alive = new WeakSet<WebSocket>();
+  private watching = new Map<string, string>(); // watcher -> the user they watch
+  private watchers = new Map<string, Set<string>>(); // user -> who is watching them
 
   constructor() {
     super();
@@ -25,6 +27,7 @@ export class Hub extends EventEmitter<HubEvents> {
   // client must already be authenticated.
   attach(name: string, ws: WebSocket) {
     this.sockets.get(name)?.close(4000, "replaced by a newer connection");
+    this.watch(name, null); // the new connection says what it wants to watch
     this.sockets.set(name, ws);
     this.alive.add(ws);
     console.log(`[server] ${name} connected`);
@@ -38,17 +41,20 @@ export class Hub extends EventEmitter<HubEvents> {
         this.emit("receiptAck", name, frame.ids.filter((id): id is string => typeof id === "string"));
       } else if (frame?.type === "typing" && isValidName(frame.to) && frame.to !== name) {
         this.send(frame.to, { type: "typing", from: name, typing: frame.typing === true });
+      } else if (frame?.type === "watch" && (frame.name === null || isValidName(frame.name))) {
+        this.watch(name, frame.name);
       }
     });
     ws.on("close", () => {
       if (this.sockets.get(name) !== ws) return;
       this.sockets.delete(name);
       console.log(`[server] ${name} disconnected`);
-      this.broadcastPeers();
+      this.watch(name, null);
+      this.announce(name, false);
     });
 
     this.emit("connect", name);
-    this.broadcastPeers();
+    this.announce(name, true);
   }
 
   // Their keys were replaced by a login on another device.
@@ -64,9 +70,26 @@ export class Hub extends EventEmitter<HubEvents> {
     return true;
   }
 
-  private broadcastPeers() {
-    const peers = [...this.sockets.keys()];
-    for (const name of peers) this.send(name, { type: "peers", peers });
+  // Presence works like WhatsApp's: each app watches only the contact whose chat is open, so a user coming or going
+  // reaches just the few apps looking at them, not everyone online.
+  private watch(watcher: string, name: string | null) {
+    const previous = this.watching.get(watcher);
+    if (previous !== undefined) {
+      this.watching.delete(watcher);
+      const set = this.watchers.get(previous);
+      set?.delete(watcher);
+      if (set?.size === 0) this.watchers.delete(previous);
+    }
+    if (name === null || name === watcher) return;
+    this.watching.set(watcher, name);
+    let set = this.watchers.get(name);
+    if (!set) this.watchers.set(name, (set = new Set()));
+    set.add(watcher);
+    this.send(watcher, { type: "presence", name, online: this.sockets.has(name) });
+  }
+
+  private announce(name: string, online: boolean) {
+    for (const watcher of this.watchers.get(name) ?? []) this.send(watcher, { type: "presence", name, online });
   }
 
   private pingAll() {

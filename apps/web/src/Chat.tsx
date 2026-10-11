@@ -12,7 +12,7 @@ const STATUS_LABELS: Record<MessageStatus, string> = {
 interface Props {
   me: string;
   contact: string;
-  online: boolean;
+  online: boolean | undefined; // undefined until the server answers
   typing: boolean;
   messages: StoredMessage[];
   onSend: (body: string) => boolean;
@@ -49,7 +49,7 @@ export function Chat({ me, contact, online, typing, messages, onSend, onTyping, 
         </button>
         <h2>{contact}</h2>
         <span className={"chat-presence" + (typing ? " typing" : "")}>
-          {typing ? "typing…" : online ? "online" : "offline"}
+          {typing ? "typing…" : online === undefined ? "" : online ? "online" : "offline"}
         </span>
       </header>
 

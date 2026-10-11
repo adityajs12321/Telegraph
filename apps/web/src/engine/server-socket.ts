@@ -11,7 +11,7 @@ interface SocketEvents {
   envelope: [env: Envelope];
   delivered: [id: string];
   bounced: [id: string];
-  peers: [peers: string[]];
+  presence: [name: string, online: boolean];
   typing: [from: string, typing: boolean];
   signedOut: []; // the server closed us because the account logged in on another device
   rejected: []; // couldn't connect: our keys may have been replaced while we were offline
@@ -22,6 +22,7 @@ export class ServerSocket {
   private url: string;
   private closed = false;
   private retry: ReturnType<typeof setTimeout> | undefined;
+  private watching: string | null = null;
   private handlers: { [K in keyof SocketEvents]?: ((...args: SocketEvents[K]) => void)[] } = {};
 
   constructor(serverUrl: string, private api: ServerApi, private name: string, private reconnectMs = 2000) {
@@ -47,6 +48,7 @@ export class ServerSocket {
     let opened = false;
     ws.onopen = () => {
       opened = true;
+      if (this.watching) this.write({ type: "watch", name: this.watching }); // the server forgets it on disconnect
       this.emit("open");
     };
     ws.onmessage = (e) => this.dispatch(parseJson(e.data) as ServerFrame | null);
@@ -75,6 +77,13 @@ export class ServerSocket {
     if (this.connected) this.write({ type: "receipt-ack", ids });
   }
 
+  // Asks the server for this user's presence (the open chat), replacing the previous one.
+  watch(name: string | null) {
+    if (name === this.watching) return;
+    this.watching = name;
+    if (this.connected) this.write({ type: "watch", name });
+  }
+
   typing(to: string, typing: boolean) {
     if (this.connected) this.write({ type: "typing", to, typing });
   }
@@ -98,8 +107,8 @@ export class ServerSocket {
       case "bounced":
         this.emit("bounced", frame.id);
         break;
-      case "peers":
-        this.emit("peers", frame.peers.filter((p) => p !== this.name));
+      case "presence":
+        this.emit("presence", frame.name, frame.online);
         break;
       case "typing":
         this.emit("typing", frame.from, frame.typing);

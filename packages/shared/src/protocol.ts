@@ -65,13 +65,14 @@ export type ServerFrame =
   | { type: "envelope"; envelope: Envelope }
   | { type: "delivered"; id: string } // sent to client after message succesfully delivered; resent until receipt-ack
   | { type: "bounced"; id: string } // recipient logged in on a new device before picking it up; resend it
-  | { type: "peers"; peers: string[] } // list of connected clients
+  | { type: "presence"; name: string; online: boolean } // the watched user: sent on `watch`, then on each change
   | { type: "typing"; from: string; typing: boolean }; // relayed live, never stored
 
 export type ClientFrame =
   | { type: "ack"; ids: string[] }
   | { type: "receipt-ack"; ids: string[] } // the sender saved these `delivered` statuses
-  | { type: "typing"; to: string; typing: boolean };
+  | { type: "typing"; to: string; typing: boolean }
+  | { type: "watch"; name: string | null }; // the one user whose presence we want (the open chat); null = none
 
 // POST /auth/login. username is only needed the first time an email logs in.
 export interface LoginRequest extends PublicKeys {
@@ -105,6 +106,7 @@ export type UiCommand =
   | { type: "send"; to: string; body: string }
   | { type: "add-contact"; name: string }
   | { type: "typing"; to: string; typing: boolean }
+  | { type: "watch"; name: string | null }
   | { type: "login-start"; email: string }
   | { type: "login-verify"; email: string; code: string; name?: string }
   | { type: "logout" };
@@ -117,10 +119,10 @@ export type LoginStep = "code-sent" | "needs-name" | "error";
 export type UiEvent =
   | { type: "logged-out" }
   | { type: "login"; step: LoginStep; reason?: string }
-  | { type: "init"; me: string; connected: boolean; peers: string[]; contacts: string[]; history: StoredMessage[] }
+  | { type: "init"; me: string; connected: boolean; contacts: string[]; history: StoredMessage[] }
   | StoredMessage
   | { type: "status"; id: string; status: MessageStatus; reason?: string }
-  | { type: "peers"; peers: string[] }
+  | { type: "presence"; name: string; online: boolean }
   | { type: "connection"; connected: boolean }
   | { type: "contacts"; contacts: string[] }
   | { type: "contact-error"; name: string; reason: string }

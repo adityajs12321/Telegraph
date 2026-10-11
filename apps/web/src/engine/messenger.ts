@@ -11,7 +11,6 @@ export type Emit = (event: UiEvent) => void;
 
 export class Messenger {
   private name: string;
-  private peers: string[] = [];
   private inFlight = new Set<string>();
   private retryTimer: ReturnType<typeof setInterval> | undefined;
   private stopped = false;
@@ -30,7 +29,7 @@ export class Messenger {
     socket.on("envelope", (env) => this.run(this.receive(env)));
     socket.on("delivered", (id) => this.run(this.markDelivered(id)));
     socket.on("bounced", (id) => this.run(this.resend(id)));
-    socket.on("peers", (peers) => this.setPeers(peers));
+    socket.on("presence", (name, online) => this.emit({ type: "presence", name, online }));
     socket.on("typing", (from, typing) => this.emit({ type: "typing", from, typing }));
   }
 
@@ -52,7 +51,6 @@ export class Messenger {
       type: "init",
       me: this.name,
       connected: this.socket.connected,
-      peers: this.peers,
       contacts: await this.store.contactList(),
       history: await this.store.recentMessages(),
     };
@@ -75,6 +73,10 @@ export class Messenger {
 
   typing(to: string, typing: boolean) {
     this.socket.typing(to, typing);
+  }
+
+  watch(name: string | null) {
+    this.socket.watch(name);
   }
 
   // ---- Outgoing ----
@@ -189,13 +191,7 @@ export class Messenger {
   }
 
   private onClose() {
-    this.setPeers([]);
     this.emit({ type: "connection", connected: false });
-  }
-
-  private setPeers(peers: string[]) {
-    this.peers = peers;
-    this.emit({ type: "peers", peers });
   }
 
   // ---- Helpers ----

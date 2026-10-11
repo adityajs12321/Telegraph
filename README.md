@@ -110,8 +110,8 @@ Messages are de-duplicated by `id`, so retries and re-deliveries are always safe
 
 - Messages are encrypted with ephemeral X25519 + HKDF-SHA256 + AES-256-GCM and signed by the
   sender. The server only sees `id`, `from`, `to` and ciphertext.
-- The server sees who talks to whom and when, and who is online (the `peers` list is shared with
-  every connected app). Typing indicators aren't encrypted, so it also sees when you're typing to someone.
+- The server sees who talks to whom and when, and who is online. Apps only learn the presence of the contact
+  whose chat is open (`watch`), not the whole online list. Typing indicators aren't encrypted, so it also sees when you're typing to someone.
 
 ## Message format (JSON)
 
@@ -138,7 +138,9 @@ If the recipient has logged in on a new device since, the server answers `409`
 and senders's app fetches recipient's new key and encrypts it again.
 
 WebSocket frames. Server → app: `{"type":"envelope","envelope":{…}}`, `{"type":"delivered","id":"…"}`,
-`{"type":"peers","peers":["alice","bob"]}`, `{"type":"typing","from":"alice","typing":true}`.
+`{"type":"presence","name":"bob","online":true}` (for the watched user only), `{"type":"typing","from":"alice","typing":true}`.
+App → server also sends `{"type":"watch","name":"bob"}` when a chat opens (`null` when none is open); the server
+replies with that user's presence right away and again whenever it changes.
 
 ## Storage
 

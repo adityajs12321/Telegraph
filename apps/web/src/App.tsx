@@ -48,7 +48,7 @@ export function App() {
             key={open}
             me={state.me}
             contact={open}
-            online={state.peers.includes(open)}
+            online={state.presence?.name === open ? state.presence.online : undefined}
             typing={state.typing.includes(open)}
             messages={state.messages.filter((m) => (m.from === state.me ? m.to === open : m.from === open))}
             onSend={(body) => send(open, body)}

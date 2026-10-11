@@ -63,6 +63,9 @@ export class Session {
       case "typing":
         this.messenger?.typing(cmd.to, cmd.typing);
         break;
+      case "watch":
+        this.messenger?.watch(cmd.name);
+        break;
       case "add-contact":
         this.messenger?.run(this.messenger.addContact(cmd.name.trim()));
         break;
