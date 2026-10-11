@@ -62,6 +62,10 @@ export class Hub extends EventEmitter<HubEvents> {
     this.sockets.get(name)?.close(SIGNED_OUT_CLOSE_CODE, reason);
   }
 
+  get size() {
+    return this.sockets.size;
+  }
+
   // Returns false if client isn't connected.
   send(name: string, frame: ServerFrame): boolean {
     const ws = this.sockets.get(name);

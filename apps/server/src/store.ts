@@ -39,6 +39,11 @@ export class Store {
     await migrate(this.db, { migrationsFolder: MIGRATIONS_DIR });
   }
 
+  // For the server's stats log.
+  poolStats() {
+    return { busy: this.pool.totalCount - this.pool.idleCount, open: this.pool.totalCount, waiting: this.pool.waitingCount };
+  }
+
   async close() {
     await this.pool.end();
   }

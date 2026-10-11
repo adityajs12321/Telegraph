@@ -9,6 +9,7 @@
 // WebSocket:
 //   GET  /ws           signed with the auth headers as query parameters; server pushes `envelope`, `delivered`, `bounced`, `presence` and `typing`; app sends `ack`, `receipt-ack`, `typing` and `watch`
 import http from "node:http";
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import type { Duplex } from "node:stream";
 import { WebSocketServer } from "ws";
 import { AUTH_HEADERS, isValidName, normalizeEmail, type Envelope, type LoginRequest, type LoginResponse } from "@telegraph/shared";
@@ -231,7 +232,31 @@ async function upgrade(req: http.IncomingMessage, socket: Duplex, head: Buffer) 
 }
 
 // ---- Startup ----
+// ---- Stats ----
+// With LOG_STATS=1, logs a line every 10s while there's traffic, to find what limits throughput under load:
+// db busy/waiting near the pool size means the database is the limit, a large loop lag means this process's CPU is.
+const LOG_STATS = process.env.LOG_STATS === "1";
+const loopDelay = monitorEventLoopDelay();
+const handled: number[] = []; // ms each request took inside the server, since the last line
+if (LOG_STATS) {
+  loopDelay.enable();
+  setInterval(() => {
+    if (handled.length === 0 && hub.size === 0) return;
+    handled.sort((a, b) => a - b);
+    const p95 = handled.length ? handled[Math.floor(handled.length * 0.95)] : 0;
+    const db = store.poolStats();
+    console.log(
+      `[stats] ${(handled.length / 10).toFixed(1)} req/s, handled p95 ${p95.toFixed(0)}ms | ` +
+        `db ${db.busy}/${db.open} busy, ${db.waiting} waiting | loop lag p99 ${(loopDelay.percentile(99) / 1e6).toFixed(0)}ms | ` +
+        `${hub.size} sockets`
+    );
+    handled.length = 0;
+    loopDelay.reset();
+  }, 10_000).unref();
+}
+
 const server = http.createServer(async (req, res) => {
+  const started = performance.now();
   if (req.method === "OPTIONS") return void res.writeHead(204, CORS_HEADERS).end();
   let status: number;
   let payload: unknown;
@@ -243,6 +268,7 @@ const server = http.createServer(async (req, res) => {
     payload = { error: err instanceof HttpError ? err.message : "internal error" };
     if (status === 500) console.error(err);
   }
+  if (LOG_STATS) handled.push(performance.now() - started);
   // The client gave up (e.g. timed out) while we worked; there's no one to answer.
   if (res.destroyed) return;
   res.writeHead(status, { ...CORS_HEADERS, "Content-Type": "application/json" }).end(JSON.stringify(payload));
